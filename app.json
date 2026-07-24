@@ -1,30 +1,58 @@
+// {
+//   "expo": {
+//     "name": "MileageTracker",
+//     "slug": "MileageTracker",
+//     "version": "1.0.0",
+//     "orientation": "portrait",
+//     "icon": "./assets/icon.png",
+//     "userInterfaceStyle": "light",
+//     "newArchEnabled": true,
+//     "splash": {
+//       "image": "./assets/splash-icon.png",
+//       "resizeMode": "contain",
+//       "backgroundColor": "#ffffff"
+//     },
+//     "ios": {
+//       "supportsTablet": true
+//     },
+//     "android": {
+//       "adaptiveIcon": {
+//         "foregroundImage": "./assets/adaptive-icon.png",
+//         "backgroundColor": "#ffffff"
+//       },
+//       "edgeToEdgeEnabled": true,
+//       "predictiveBackGestureEnabled": false
+//     },
+//     "web": {
+//       "favicon": "./assets/favicon.png"
+//     },
+//     "plugins": [
+//       "expo-sqlite"
+//     ]
+//   }
+// }
+
 {
   "expo": {
-    "name": "MileageTracker",
-    "slug": "MileageTracker",
+    "name": "Mileage Tracker",
+    "slug": "mileage-tracker",
     "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tom.mileagetracker",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "We need your location to measure driving distance for tax deduction reports.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
+        "UIBackgroundModes": ["location"]
+      }
     },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Mileage Tracker to track your trips in the background for tax write-offs."
+        }
+      ]
+    ]
   }
 }
