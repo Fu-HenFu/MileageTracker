@@ -1,58 +1,29 @@
-// {
-//   "expo": {
-//     "name": "MileageTracker",
-//     "slug": "MileageTracker",
-//     "version": "1.0.0",
-//     "orientation": "portrait",
-//     "icon": "./assets/icon.png",
-//     "userInterfaceStyle": "light",
-//     "newArchEnabled": true,
-//     "splash": {
-//       "image": "./assets/splash-icon.png",
-//       "resizeMode": "contain",
-//       "backgroundColor": "#ffffff"
-//     },
-//     "ios": {
-//       "supportsTablet": true
-//     },
-//     "android": {
-//       "adaptiveIcon": {
-//         "foregroundImage": "./assets/adaptive-icon.png",
-//         "backgroundColor": "#ffffff"
-//       },
-//       "edgeToEdgeEnabled": true,
-//       "predictiveBackGestureEnabled": false
-//     },
-//     "web": {
-//       "favicon": "./assets/favicon.png"
-//     },
-//     "plugins": [
-//       "expo-sqlite"
-//     ]
-//   }
-// }
-
 {
   "expo": {
-    "name": "Mileage Tracker",
-    "slug": "mileage-tracker",
+    "name": "Tax Miles",
+    "slug": "tax-miles",
     "version": "1.0.0",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.tom.mileagetracker",
+      "bundleIdentifier": "com.zovito.mileagetracker",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We need your location to measure driving distance for tax deduction reports.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
-        "UIBackgroundModes": ["location"]
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "plugins": [
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Mileage Tracker to track your trips in the background for tax write-offs."
+          "locationAlwaysAndWhenInUsePermission": "Allow Mileage Tracker to track your trips in the background for tax write-offs.",
+          "isIosBackgroundLocationEnabled": true
         }
-      ]
+      ],
+      "expo-sqlite",
+      "expo-font"
     ]
   }
 }

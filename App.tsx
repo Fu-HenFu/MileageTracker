@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+import Purchases from 'react-native-purchases';
 
 import { initDatabase } from './src/db/database';
 import { TrackerScreen } from './src/screens/TrackerScreen';
@@ -12,7 +13,11 @@ const Tab = createBottomTabNavigator();
 
 export default function App() {
   useEffect(() => {
+    // 1. 初始化 SQLite 本地数据库
     initDatabase();
+
+    // 2. 🌟 初始化 RevenueCat (填入你从 RevenueCat 后台获取的 Public API Key)
+    // Purchases.configure({ apiKey: 'appl_这里粘贴你的PublicAPIKey' });
   }, []);
 
   return (

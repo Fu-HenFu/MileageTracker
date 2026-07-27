@@ -1,10 +1,18 @@
-import React, { useState, useCallback } from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import React, { useCallback, useState } from 'react';
+import {
+  Alert,
+  FlatList,
+  Modal,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
-import { insertTrip, getAllTrips, TripRecord } from '../db/database';
+import { deleteTrip, getAllTrips, insertTrip, TripRecord } from '../db/database';
+import { LocationService } from '../services/LocationService';
 import { calculateTaxDeduction, CountryCode } from '../utils/TaxEngine';
-import { useNavigation } from '@react-navigation/native';
 
 export const TrackerScreen = () => {
   const navigation = useNavigation<any>();
@@ -12,6 +20,8 @@ export const TrackerScreen = () => {
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [isTracking, setIsTracking] = useState(false);
   const [startTime, setStartTime] = useState<Date | null>(null);
+
+  // 控制选中行程详情弹窗
   const [selectedTrip, setSelectedTrip] = useState<TripRecord | null>(null);
 
   // 每次切换到这个页面时刷新数据
@@ -21,26 +31,38 @@ export const TrackerScreen = () => {
     }, [])
   );
 
-  const handleStartTracking = () => {
-    setIsTracking(true);
-    setStartTime(new Date());
+  // 🟢 开启真实后台 GPS 定位追踪
+  const handleStartTracking = async () => {
+    const success = await LocationService.startTracking();
+    if (success) {
+      setIsTracking(true);
+      setStartTime(new Date());
+    } else {
+      Alert.alert(
+        'Permission Required',
+        'Please allow "Always Allow" location access in device Settings to track mileage in background.'
+      );
+    }
   };
 
-  const handleStopTracking = () => {
+  // 🔴 停止后台定位，并保存实际测得的 GPS 公里数
+  const handleStopTracking = async () => {
     if (!startTime) return;
     const endTime = new Date();
-    const simulatedMeters = Math.floor(Math.random() * (25000 - 8000 + 1)) + 8000;
-    const taxRes = calculateTaxDeduction(simulatedMeters, selectedCountry);
+
+    // 从后台 LocationService 获取实际行驶的物理米数
+    const realMeters = await LocationService.stopTracking();
+    const taxRes = calculateTaxDeduction(realMeters, selectedCountry);
 
     insertTrip({
       start_time: startTime.toISOString(),
       end_time: endTime.toISOString(),
-      distance_meters: simulatedMeters,
+      distance_meters: realMeters,
       category: 'business',
       country_code: selectedCountry,
       deduction_amount: taxRes.deductionAmount,
-      start_address: 'Current Location',
-      end_address: 'Destination Office',
+      start_address: 'Start Location',
+      end_address: 'Destination',
     });
 
     setIsTracking(false);
@@ -48,13 +70,15 @@ export const TrackerScreen = () => {
     setTrips(getAllTrips());
   };
 
-  // 删除行程方法
-const handleDeleteTrip = (id?: number) => {
-  if (!id) return;
-  // TODO: 调用 database 的 deleteTrip(id)
-  setSelectedTrip(null);
-  setTrips(getAllTrips());
-};
+  // 🗑️ 删除行程
+  const handleDeleteTrip = (id?: number) => {
+    if (!id) return;
+    if (typeof deleteTrip === 'function') {
+      deleteTrip(id);
+    }
+    setSelectedTrip(null);
+    setTrips(getAllTrips());
+  };
 
   const totalTaxSaved = trips
     .filter((t) => t.country_code === selectedCountry)
@@ -64,7 +88,7 @@ const handleDeleteTrip = (id?: number) => {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* 国家切换器 */}
+      {/* 1. 国家切换器 */}
       <View style={styles.countryPicker}>
         {(['US', 'CA', 'AU'] as CountryCode[]).map((country) => (
           <TouchableOpacity
@@ -79,14 +103,16 @@ const handleDeleteTrip = (id?: number) => {
         ))}
       </View>
 
-      {/* 抵税大卡片 */}
+      {/* 2. 抵税大卡片 */}
       <View style={styles.summaryCard}>
         <Text style={styles.summaryTitle}>2026 Estimated Tax Deduction</Text>
-        <Text style={styles.summaryAmount}>{currentCurrency} {totalTaxSaved.toFixed(2)}</Text>
+        <Text style={styles.summaryAmount}>
+          {currentCurrency} {totalTaxSaved.toFixed(2)}
+        </Text>
         <Text style={styles.summarySub}>Country Profile: {selectedCountry}</Text>
       </View>
 
-      {/* Start/Stop 控制按钮 */}
+      {/* 3. Start/Stop 控制按钮 */}
       {!isTracking ? (
         <TouchableOpacity style={styles.startBtn} onPress={handleStartTracking}>
           <Text style={styles.startBtnText}>🟢 START DRIVING</Text>
@@ -101,33 +127,112 @@ const handleDeleteTrip = (id?: number) => {
         </View>
       )}
 
-      {/* 最近行程 Header + 查看全部按钮 */}
-    <View style={styles.sectionHeaderRow}>
-    <Text style={styles.sectionHeader}>Recent Activity</Text>
-    <TouchableOpacity onPress={() => navigation.navigate('Log')}>
-        <Text style={styles.seeAllText}>See All ({trips.length}) ➔</Text>
-    </TouchableOpacity>
-    </View>
+      {/* 4. 最近行程 Header */}
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.sectionHeader}>Recent Activity</Text>
+        <TouchableOpacity onPress={() => navigation.navigate('Log')}>
+          <Text style={styles.seeAllText}>See All ({trips.length}) ➔</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* 5. 行程列表 */}
       <FlatList
         data={trips.slice(0, 3)}
         keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
         renderItem={({ item }) => {
-            const res = calculateTaxDeduction(item.distance_meters, item.country_code);
-            return (
-            <TouchableOpacity 
-                style={styles.tripCard} 
-                activeOpacity={0.7}
-                onPress={() => setSelectedTrip(item)} // 🌟 点击打开详情
+          const res = calculateTaxDeduction(item.distance_meters, item.country_code);
+          return (
+            <TouchableOpacity
+              style={styles.tripCard}
+              activeOpacity={0.7}
+              onPress={() => setSelectedTrip(item)}
             >
-                <View style={{ flex: 1 }}>
-                <Text style={styles.tripTitle}>{item.start_address} ➔ {item.end_address}</Text>
-                <Text style={styles.tripMeta}>{res.formattedDistance} • {item.category.toUpperCase()}</Text>
-                </View>
-                <Text style={styles.tripAmount}>+{res.formattedDeduction}</Text>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={styles.tripTitle} numberOfLines={1}>
+                  {item.start_address} ➔ {item.end_address}
+                </Text>
+                <Text style={styles.tripMeta}>
+                  {res.formattedDistance} • {item.category.toUpperCase()}
+                </Text>
+              </View>
+              <Text style={styles.tripAmount}>+{res.formattedDeduction}</Text>
             </TouchableOpacity>
-            );
+          );
         }}
-        />
+      />
+
+      {/* 6. 行程详情 Modal 弹窗 */}
+      <Modal
+        visible={!!selectedTrip}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setSelectedTrip(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {selectedTrip && (() => {
+              const res = calculateTaxDeduction(selectedTrip.distance_meters, selectedTrip.country_code);
+              const startTimeStr = new Date(selectedTrip.start_time).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              const endTimeStr = new Date(selectedTrip.end_time).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+
+              return (
+                <>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>Trip Details</Text>
+                    <TouchableOpacity onPress={() => setSelectedTrip(null)}>
+                      <Text style={styles.closeBtnText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.modalAmountBox}>
+                    <Text style={styles.modalAmountLabel}>Estimated Tax Deduction</Text>
+                    <Text style={styles.modalAmountValue}>+{res.formattedDeduction}</Text>
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Route</Text>
+                    <Text style={styles.detailValue}>
+                      {selectedTrip.start_address} ➔ {selectedTrip.end_address}
+                    </Text>
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Distance</Text>
+                    <Text style={styles.detailValue}>{res.formattedDistance}</Text>
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Time Window</Text>
+                    <Text style={styles.detailValue}>
+                      {startTimeStr} - {endTimeStr}
+                    </Text>
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Category</Text>
+                    <Text style={[styles.detailValue, { fontWeight: 'bold', color: '#007AFF' }]}>
+                      {selectedTrip.category.toUpperCase()}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.deleteBtn}
+                    onPress={() => handleDeleteTrip(selectedTrip.id)}
+                  >
+                    <Text style={styles.deleteBtnText}>Delete This Trip</Text>
+                  </TouchableOpacity>
+                </>
+              );
+            })()}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -150,18 +255,58 @@ const styles = StyleSheet.create({
   trackingSubText: { color: '#8e8e93', fontSize: 12, marginVertical: 8 },
   stopBtn: { backgroundColor: '#ff3b30', paddingVertical: 12, borderRadius: 10, width: '100%', alignItems: 'center' },
   stopBtnText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
-//   sectionHeader: { fontSize: 14, fontWeight: 'bold', color: '#666', marginBottom: 10, textTransform: 'uppercase' },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  sectionHeader: { fontSize: 14, fontWeight: 'bold', color: '#666', textTransform: 'uppercase' },
+  seeAllText: { fontSize: 13, color: '#007AFF', fontWeight: '600' },
   tripCard: { backgroundColor: '#fff', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   tripTitle: { fontSize: 15, fontWeight: '600', color: '#1c1c1e' },
   tripMeta: { fontSize: 12, color: '#8e8e93', marginTop: 4 },
   tripAmount: { fontSize: 16, fontWeight: 'bold', color: '#30d158' },
-  // ... 保持原有样式，新增/修改以下样式：
-  sectionHeaderRow: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    marginBottom: 10 
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
   },
-  sectionHeader: { fontSize: 14, fontWeight: 'bold', color: '#666', textTransform: 'uppercase' },
-  seeAllText: { fontSize: 13, color: '#007AFF', fontWeight: '600' },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 40,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1c1c1e' },
+  closeBtnText: { fontSize: 18, color: '#8e8e93', fontWeight: 'bold' },
+  modalAmountBox: {
+    backgroundColor: '#f2f2f7',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalAmountLabel: { fontSize: 12, color: '#8e8e93', textTransform: 'uppercase' },
+  modalAmountValue: { fontSize: 28, fontWeight: 'bold', color: '#30d158', marginTop: 4 },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f2f2f7',
+  },
+  detailLabel: { color: '#8e8e93', fontSize: 14 },
+  detailValue: { color: '#1c1c1e', fontSize: 14, fontWeight: '500', maxWidth: '65%', textAlign: 'right' },
+  deleteBtn: {
+    marginTop: 25,
+    backgroundColor: '#ffe5e5',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  deleteBtnText: { color: '#ff3b30', fontWeight: 'bold', fontSize: 14 },
 });
