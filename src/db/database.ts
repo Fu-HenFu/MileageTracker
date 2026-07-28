@@ -43,7 +43,7 @@ export const insertTrip = (trip: TripRecord) => {
     INSERT INTO trips (start_time, end_time, distance_meters, category, country_code, deduction_amount, start_address, end_address)
     VALUES ($start_time, $end_time, $distance_meters, $category, $country_code, $deduction_amount, $start_address, $end_address)
   `);
-  
+
   return statement.executeSync({
     $start_time: trip.start_time,
     $end_time: trip.end_time,
@@ -61,4 +61,37 @@ export const insertTrip = (trip: TripRecord) => {
  */
 export const getAllTrips = (): TripRecord[] => {
   return db.getAllSync<TripRecord>('SELECT * FROM trips ORDER BY id DESC');
+};
+
+/**
+ * 根据 ID 删除单条行程记录
+ */
+export const deleteTrip = (id: number) => {
+  const statement = db.prepareSync('DELETE FROM trips WHERE id = $id');
+  return statement.executeSync({ $id: id });
+};
+
+/**
+ * 清空所有行程记录
+ */
+export const clearAllTrips = () => {
+  db.execSync('DELETE FROM trips');
+};
+
+/**
+ * 🌟 修改已有行程的分类并自动重算更新抵税金额
+ */
+export const updateTripCategory = (
+  id: number,
+  category: 'business' | 'personal',
+  deduction_amount: number
+) => {
+  const statement = db.prepareSync(
+    'UPDATE trips SET category = $category, deduction_amount = $deduction_amount WHERE id = $id'
+  );
+  return statement.executeSync({
+    $category: category,
+    $deduction_amount: deduction_amount,
+    $id: id,
+  });
 };

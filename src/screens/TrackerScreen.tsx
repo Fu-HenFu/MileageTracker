@@ -10,13 +10,24 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { deleteTrip, getAllTrips, insertTrip, TripRecord } from '../db/database';
+import {
+  deleteTrip,
+  getAllTrips,
+  insertTrip,
+  updateTripCategory,
+  TripRecord,
+} from '../db/database';
 import { LocationService } from '../services/LocationService';
 import { calculateTaxDeduction, CountryCode } from '../utils/TaxEngine';
 
 export const TrackerScreen = () => {
+  const [startAddress, setStartAddress] = useState<string>('');
   const navigation = useNavigation<any>();
   const [selectedCountry, setSelectedCountry] = useState<CountryCode>('US');
+  
+  // 1. 开车前的预选类别（默认为 Business 保护用户）
+  const [selectedCategory, setSelectedCategory] = useState<'business' | 'personal'>('business');
+  
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [isTracking, setIsTracking] = useState(false);
   const [startTime, setStartTime] = useState<Date | null>(null);
@@ -31,12 +42,15 @@ export const TrackerScreen = () => {
     }, [])
   );
 
-  // 🟢 开启真实后台 GPS 定位追踪
+  // 🟢 开始行程时：记录起点真实地址
   const handleStartTracking = async () => {
     const success = await LocationService.startTracking();
     if (success) {
       setIsTracking(true);
       setStartTime(new Date());
+
+      const address = await LocationService.getReadableAddress();
+      setStartAddress(address);
     } else {
       Alert.alert(
         'Permission Required',
@@ -45,28 +59,57 @@ export const TrackerScreen = () => {
     }
   };
 
-  // 🔴 停止后台定位，并保存实际测得的 GPS 公里数
+  // 🔴 结束行程时：获取终点真实地址并存入数据库
   const handleStopTracking = async () => {
     if (!startTime) return;
     const endTime = new Date();
 
-    // 从后台 LocationService 获取实际行驶的物理米数
+    const endAddress = await LocationService.getReadableAddress();
     const realMeters = await LocationService.stopTracking();
     const taxRes = calculateTaxDeduction(realMeters, selectedCountry);
+
+    // 如果是 Personal 行程，初始抵税额计算为 0
+    const finalDeductionAmount =
+      selectedCategory === 'business' ? taxRes.deductionAmount : 0;
 
     insertTrip({
       start_time: startTime.toISOString(),
       end_time: endTime.toISOString(),
       distance_meters: realMeters,
-      category: 'business',
+      category: selectedCategory,
       country_code: selectedCountry,
-      deduction_amount: taxRes.deductionAmount,
-      start_address: 'Start Location',
-      end_address: 'Destination',
+      deduction_amount: finalDeductionAmount,
+      start_address: startAddress || 'Start Location',
+      end_address: endAddress || 'End Location',
     });
 
     setIsTracking(false);
     setStartTime(null);
+    setStartAddress('');
+    setTrips(getAllTrips());
+  };
+
+  // 🌟 事后分类修改逻辑：在 Modal 中随时自由切换分类并实时刷新全局数据
+  const handleCategoryChange = (
+    trip: TripRecord,
+    newCategory: 'business' | 'personal'
+  ) => {
+    if (!trip.id || trip.category === newCategory) return;
+
+    // 重新计算抵税金额
+    const taxRes = calculateTaxDeduction(trip.distance_meters, trip.country_code);
+    const newDeduction = newCategory === 'business' ? taxRes.deductionAmount : 0;
+
+    // 更新数据库
+    updateTripCategory(trip.id, newCategory, newDeduction);
+
+    // 刷新 Modal 视图及列表
+    const updatedTrip = {
+      ...trip,
+      category: newCategory,
+      deduction_amount: newDeduction,
+    };
+    setSelectedTrip(updatedTrip);
     setTrips(getAllTrips());
   };
 
@@ -112,14 +155,57 @@ export const TrackerScreen = () => {
         <Text style={styles.summarySub}>Country Profile: {selectedCountry}</Text>
       </View>
 
-      {/* 3. Start/Stop 控制按钮 */}
+      {/* 3. 开车前分类预选器 */}
+      {!isTracking && (
+        <View style={styles.categoryPicker}>
+          <TouchableOpacity
+            style={[
+              styles.categoryBtn,
+              selectedCategory === 'business' && styles.activeCategoryBtn,
+            ]}
+            onPress={() => setSelectedCategory('business')}
+          >
+            <Text
+              style={[
+                styles.categoryText,
+                selectedCategory === 'business' && styles.activeCategoryText,
+              ]}
+            >
+              🏢 Business
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.categoryBtn,
+              selectedCategory === 'personal' && styles.activeCategoryBtn,
+            ]}
+            onPress={() => setSelectedCategory('personal')}
+          >
+            <Text
+              style={[
+                styles.categoryText,
+                selectedCategory === 'personal' && styles.activeCategoryText,
+              ]}
+            >
+              🚗 Personal
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* 4. Start/Stop 控制按钮 */}
       {!isTracking ? (
         <TouchableOpacity style={styles.startBtn} onPress={handleStartTracking}>
-          <Text style={styles.startBtnText}>🟢 START DRIVING</Text>
+          <Text style={styles.startBtnText}>
+            🟢 START {selectedCategory.toUpperCase()} DRIVE
+          </Text>
         </TouchableOpacity>
       ) : (
         <View style={styles.activeTrackingBox}>
-          <Text style={styles.trackingStatusText}>🔴 Trip in Progress...</Text>
+          <Text style={styles.trackingStatusText}>
+            🔴 {selectedCategory.toUpperCase()} Trip in Progress...
+          </Text>
           <Text style={styles.trackingSubText}>Recording GPS & Calculation in background</Text>
           <TouchableOpacity style={styles.stopBtn} onPress={handleStopTracking}>
             <Text style={styles.stopBtnText}>STOP & SAVE TRIP</Text>
@@ -127,7 +213,7 @@ export const TrackerScreen = () => {
         </View>
       )}
 
-      {/* 4. 最近行程 Header */}
+      {/* 5. 最近行程 Header */}
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.sectionHeader}>Recent Activity</Text>
         <TouchableOpacity onPress={() => navigation.navigate('Log')}>
@@ -135,7 +221,7 @@ export const TrackerScreen = () => {
         </TouchableOpacity>
       </View>
 
-      {/* 5. 行程列表 */}
+      {/* 6. 行程列表 */}
       <FlatList
         data={trips.slice(0, 3)}
         keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
@@ -147,21 +233,40 @@ export const TrackerScreen = () => {
               activeOpacity={0.7}
               onPress={() => setSelectedTrip(item)}
             >
-              <View style={{ flex: 1, marginRight: 10 }}>
-                <Text style={styles.tripTitle} numberOfLines={1}>
-                  {item.start_address} ➔ {item.end_address}
-                </Text>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <View style={styles.addressRow}>
+                  <View style={[styles.dot, { backgroundColor: '#30d158' }]} />
+                  <Text style={styles.addressText} numberOfLines={1}>
+                    {item.start_address}
+                  </Text>
+                </View>
+
+                <View style={[styles.addressRow, { marginTop: 4 }]}>
+                  <View style={[styles.dot, { backgroundColor: '#ff3b30' }]} />
+                  <Text style={styles.addressText} numberOfLines={1}>
+                    {item.end_address}
+                  </Text>
+                </View>
+
                 <Text style={styles.tripMeta}>
                   {res.formattedDistance} • {item.category.toUpperCase()}
                 </Text>
               </View>
-              <Text style={styles.tripAmount}>+{res.formattedDeduction}</Text>
+
+              <Text
+                style={[
+                  styles.tripAmount,
+                  item.category === 'personal' && { color: '#8e8e93' },
+                ]}
+              >
+                {item.category === 'personal' ? '+$0.00' : `+${res.formattedDeduction}`}
+              </Text>
             </TouchableOpacity>
           );
         }}
       />
 
-      {/* 6. 行程详情 Modal 弹窗 */}
+      {/* 7. 行程详情 Modal 弹窗（含事后一键切换分类） */}
       <Modal
         visible={!!selectedTrip}
         animationType="slide"
@@ -171,7 +276,10 @@ export const TrackerScreen = () => {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             {selectedTrip && (() => {
-              const res = calculateTaxDeduction(selectedTrip.distance_meters, selectedTrip.country_code);
+              const res = calculateTaxDeduction(
+                selectedTrip.distance_meters,
+                selectedTrip.country_code
+              );
               const startTimeStr = new Date(selectedTrip.start_time).toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
@@ -192,7 +300,11 @@ export const TrackerScreen = () => {
 
                   <View style={styles.modalAmountBox}>
                     <Text style={styles.modalAmountLabel}>Estimated Tax Deduction</Text>
-                    <Text style={styles.modalAmountValue}>+{res.formattedDeduction}</Text>
+                    <Text style={styles.modalAmountValue}>
+                      {selectedTrip.category === 'personal'
+                        ? '+$0.00'
+                        : `+${res.formattedDeduction}`}
+                    </Text>
                   </View>
 
                   <View style={styles.detailRow}>
@@ -214,11 +326,44 @@ export const TrackerScreen = () => {
                     </Text>
                   </View>
 
+                  {/* 🌟 动态分段按钮：事后可随时纠错切换分类 */}
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Category</Text>
-                    <Text style={[styles.detailValue, { fontWeight: 'bold', color: '#007AFF' }]}>
-                      {selectedTrip.category.toUpperCase()}
-                    </Text>
+                    <View style={styles.modalCategoryToggle}>
+                      <TouchableOpacity
+                        style={[
+                          styles.modalCatBtn,
+                          selectedTrip.category === 'business' && styles.modalCatBtnActive,
+                        ]}
+                        onPress={() => handleCategoryChange(selectedTrip, 'business')}
+                      >
+                        <Text
+                          style={[
+                            styles.modalCatText,
+                            selectedTrip.category === 'business' && styles.modalCatTextActive,
+                          ]}
+                        >
+                          BUSINESS
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.modalCatBtn,
+                          selectedTrip.category === 'personal' && styles.modalCatBtnActive,
+                        ]}
+                        onPress={() => handleCategoryChange(selectedTrip, 'personal')}
+                      >
+                        <Text
+                          style={[
+                            styles.modalCatText,
+                            selectedTrip.category === 'personal' && styles.modalCatTextActive,
+                          ]}
+                        >
+                          PERSONAL
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   <TouchableOpacity
@@ -239,7 +384,7 @@ export const TrackerScreen = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f4f6', padding: 16 },
-  countryPicker: { flexDirection: 'row', justifyContent: 'center', marginBottom: 15, marginTop: 10 },
+  countryPicker: { flexDirection: 'row', justifyContent: 'center', marginBottom: 12, marginTop: 10 },
   countryBtn: { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, backgroundColor: '#e0e0e0', marginHorizontal: 5 },
   activeBtn: { backgroundColor: '#007AFF' },
   btnText: { color: '#333', fontWeight: '600' },
@@ -248,6 +393,13 @@ const styles = StyleSheet.create({
   summaryTitle: { color: '#8e8e93', fontSize: 13, textTransform: 'uppercase', fontWeight: '600' },
   summaryAmount: { color: '#30d158', fontSize: 36, fontWeight: 'bold', marginVertical: 6 },
   summarySub: { color: '#8e8e93', fontSize: 12 },
+
+  categoryPicker: { flexDirection: 'row', backgroundColor: '#e5e5ea', borderRadius: 12, padding: 3, marginBottom: 12 },
+  categoryBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 9 },
+  activeCategoryBtn: { backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.12, shadowRadius: 2, elevation: 2 },
+  categoryText: { color: '#8e8e93', fontWeight: '600', fontSize: 14 },
+  activeCategoryText: { color: '#1c1c1e', fontWeight: 'bold', fontSize: 14 },
+
   startBtn: { backgroundColor: '#34c759', paddingVertical: 18, borderRadius: 14, alignItems: 'center', marginBottom: 20 },
   startBtnText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   activeTrackingBox: { backgroundColor: '#fff', padding: 16, borderRadius: 14, alignItems: 'center', marginBottom: 20, borderWidth: 1.5, borderColor: '#ff3b30' },
@@ -259,54 +411,32 @@ const styles = StyleSheet.create({
   sectionHeader: { fontSize: 14, fontWeight: 'bold', color: '#666', textTransform: 'uppercase' },
   seeAllText: { fontSize: 13, color: '#007AFF', fontWeight: '600' },
   tripCard: { backgroundColor: '#fff', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  tripTitle: { fontSize: 15, fontWeight: '600', color: '#1c1c1e' },
-  tripMeta: { fontSize: 12, color: '#8e8e93', marginTop: 4 },
   tripAmount: { fontSize: 16, fontWeight: 'bold', color: '#30d158' },
 
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 40,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 15,
-  },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1c1c1e' },
   closeBtnText: { fontSize: 18, color: '#8e8e93', fontWeight: 'bold' },
-  modalAmountBox: {
-    backgroundColor: '#f2f2f7',
-    padding: 15,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 20,
-  },
+  modalAmountBox: { backgroundColor: '#f2f2f7', padding: 15, borderRadius: 12, alignItems: 'center', marginBottom: 20 },
   modalAmountLabel: { fontSize: 12, color: '#8e8e93', textTransform: 'uppercase' },
   modalAmountValue: { fontSize: 28, fontWeight: 'bold', color: '#30d158', marginTop: 4 },
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f2f2f7',
-  },
+  detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f2f2f7' },
   detailLabel: { color: '#8e8e93', fontSize: 14 },
   detailValue: { color: '#1c1c1e', fontSize: 14, fontWeight: '500', maxWidth: '65%', textAlign: 'right' },
-  deleteBtn: {
-    marginTop: 25,
-    backgroundColor: '#ffe5e5',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
+  
+  // Modal 分类切换按钮样式
+  modalCategoryToggle: { flexDirection: 'row', backgroundColor: '#e5e5ea', borderRadius: 8, padding: 2 },
+  modalCatBtn: { paddingVertical: 5, paddingHorizontal: 12, borderRadius: 6 },
+  modalCatBtnActive: { backgroundColor: '#007AFF' },
+  modalCatText: { fontSize: 12, fontWeight: '600', color: '#8e8e93' },
+  modalCatTextActive: { color: '#fff', fontWeight: 'bold' },
+
+  deleteBtn: { marginTop: 25, backgroundColor: '#ffe5e5', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   deleteBtnText: { color: '#ff3b30', fontWeight: 'bold', fontSize: 14 },
+
+  addressRow: { flexDirection: 'row', alignItems: 'center' },
+  dot: { width: 7, height: 7, borderRadius: 3.5, marginRight: 8 },
+  addressText: { fontSize: 14, fontWeight: '600', color: '#1c1c1e', flex: 1 },
+  tripMeta: { fontSize: 12, color: '#8e8e93', marginTop: 6, marginLeft: 15 },
 });

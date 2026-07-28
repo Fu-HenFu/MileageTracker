@@ -1,18 +1,13 @@
-// services/LocationService.ts
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 
-// 1. 定义全局后台任务名称
-export const BACKGROUND_LOCATION_TASK = 'BACKGROUND_MILEAGE_TRACKER_TASK';
+const LOCATION_TASK_NAME = 'background-location-task';
 
-// 模块级内存变量：记录上一次位置和实时累加距离
-let lastKnownCoords: { latitude: number; longitude: number } | null = null;
-let currentTripMeters = 0;
+let totalMeters = 0;
+let lastCoords: { latitude: number; longitude: number } | null = null;
 
-/**
- * 🧮 辅助函数：Haversine 算法（根据两点经纬度计算真实物理距离，单位：米）
- */
-function calculateHaversineDistance(
+// 🌟 辅助方法：计算两个 GPS 坐标之间的物理距离（单位：米）
+function calculateDistance(
   lat1: number,
   lon1: number,
   lat2: number,
@@ -31,133 +26,123 @@ function calculateHaversineDistance(
   return R * c;
 }
 
-/**
- * 🌟 核心：定义 TaskManager 后台任务
- * ⚠️ 必须在模块最外层执行，确保入口文件加载时即可向 iOS/Android 系统注册！
- */
-TaskManager.defineTask(BACKGROUND_LOCATION_TASK, ({ data, error }) => {
+// 🌟 注册后台定位任务
+TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }: any) => {
   if (error) {
-    console.error('❌ 后台定位异常:', error);
+    console.error('Background location task error:', error);
     return;
   }
-
   if (data) {
-    const { locations } = data as { locations: Location.LocationObject[] };
+    const { locations } = data;
     const location = locations[0];
-
-    if (!location) return;
-
-    const { latitude, longitude, accuracy } = location.coords;
-
-    // 🛡️ 过滤精度极差的无用信号（如精度差于 30 米的点弃用）
-    if (accuracy && accuracy > 30) return;
-
-    if (lastKnownCoords) {
-      const deltaMeters = calculateHaversineDistance(
-        lastKnownCoords.latitude,
-        lastKnownCoords.longitude,
-        latitude,
-        longitude
-      );
-
-      // 🛡️ 防抖动过滤：如果移动小于 3 米（比如等红灯时 GPS 漂移），不计入里程
-      if (deltaMeters > 3) {
-        currentTripMeters += deltaMeters;
-        console.log(
-          `📍 后台新坐标: [${latitude.toFixed(4)}, ${longitude.toFixed(4)}] | 增加: ${deltaMeters.toFixed(1)}m | 总里程: ${(currentTripMeters / 1000).toFixed(2)}km`
+    if (location) {
+      const { latitude, longitude } = location.coords;
+      if (lastCoords) {
+        const dist = calculateDistance(
+          lastCoords.latitude,
+          lastCoords.longitude,
+          latitude,
+          longitude
         );
+        // 过滤小于 5 米的微小抖动
+        if (dist > 5) {
+          totalMeters += dist;
+          console.log(
+            `📍 后台新坐标: [${latitude.toFixed(4)}, ${longitude.toFixed(4)}] | 增加: ${dist.toFixed(1)}m | 总里程: ${(totalMeters / 1000).toFixed(2)}km`
+          );
+          lastCoords = { latitude, longitude };
+        }
+      } else {
+        lastCoords = { latitude, longitude };
       }
     }
-
-    // 更新最后记录点
-    lastKnownCoords = { latitude, longitude };
   }
 });
 
-/**
- * 🛠️ 定位服务对外导出的 API 封装
- */
+// 🌟 导出 LocationService 对象
 export const LocationService = {
-  /**
-   * 1. 申请前台+后台定位权限
-   */
-  async requestPermissions(): Promise<boolean> {
-    const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
-    if (fgStatus !== 'granted') return false;
+  // 1. 开始追踪
+  startTracking: async (): Promise<boolean> => {
+    const { status: foregroundStatus } =
+      await Location.requestForegroundPermissionsAsync();
+    if (foregroundStatus !== 'granted') return false;
 
-    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-    return bgStatus === 'granted';
-  },
+    const { status: backgroundStatus } =
+      await Location.requestBackgroundPermissionsAsync();
+    if (backgroundStatus !== 'granted') return false;
 
-  /**
-   * 2. 开启后台行程追踪
-   */
-  async startTracking(): Promise<boolean> {
-    const hasPermission = await this.requestPermissions();
-    if (!hasPermission) {
-      console.warn('⚠️ 缺少后台定位权限');
-      return false;
+    totalMeters = 0;
+    lastCoords = null;
+
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(
+      LOCATION_TASK_NAME
+    );
+    if (hasStarted) {
+      await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     }
 
-    // 重置本次行程计数
-    currentTripMeters = 0;
-    lastKnownCoords = null;
-
-    // 获取一次当前初始位置
-    const currentLoc = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
-    });
-    lastKnownCoords = {
-      latitude: currentLoc.coords.latitude,
-      longitude: currentLoc.coords.longitude,
-    };
-
-    // 启动原生后台 GPS 定位监听
-    await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-      accuracy: Location.Accuracy.BestForNavigation, // 导航级最高精度
-      distanceInterval: 10,                           // 每移动 10 米触发一次更新
-      timeInterval: 3000,                             // 或每 3 秒更新一次
-      showsBackgroundLocationIndicator: true,         // iOS 顶部显示蓝色定位状态条（苹果合规必填）
-      foregroundService: {                            // Android 适配通知栏
+    await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+      accuracy: Location.Accuracy.BestForNavigation,
+      timeInterval: 2000,
+      distanceInterval: 5,
+      showsBackgroundLocationIndicator: true,
+      foregroundService: {
         notificationTitle: 'Mileage Tracker Active',
-        notificationBody: 'Recording your tax deductible trip...',
+        notificationBody: 'Tracking your drive in background...',
       },
     });
 
-    console.log('🟢 后台 GPS 追踪已成功启动');
     return true;
   },
 
-  /**
-   * 3. 停止后台行程追踪，并返回本次累加的实际总米数
-   */
-  async stopTracking(): Promise<number> {
-    const isStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-    if (isStarted) {
-      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-      console.log('🔴 后台 GPS 追踪已停止');
+  // 2. 停止追踪并返回总行驶米数
+  stopTracking: async (): Promise<number> => {
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(
+      LOCATION_TASK_NAME
+    );
+    if (hasStarted) {
+      await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     }
 
-    const finalMeters = currentTripMeters;
-
-    // 清空状态
-    currentTripMeters = 0;
-    lastKnownCoords = null;
-
-    return finalMeters;
+    const recordedMeters = totalMeters;
+    totalMeters = 0;
+    lastCoords = null;
+    return recordedMeters;
   },
 
-  /**
-   * 4. 查询当前是否正在后台追踪中
-   */
-  async isTracking(): Promise<boolean> {
-    return await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-  },
+  // 3. 将当前 GPS 坐标转换为人类可读的真实街道地址
+  getReadableAddress: async (): Promise<string> => {
+    try {
+      // 🌟 优化 1：优先尝试获取最后已知位置（瞬间返回，不会因为模拟器卡死而超时）
+      let location = await Location.getLastKnownPositionAsync();
+      
+      // 🌟 优化 2：如果没有缓存位置，再请求当前位置，并把精度降为 Balanced（避免模拟器报错）
+      if (!location) {
+        location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced, 
+        });
+      }
 
-  /**
-   * 5. 获取实时已行驶的公里数（供 UI 轮询刷新展示）
-   */
-  getCurrentDistanceMeters(): number {
-    return currentTripMeters;
+      if (!location) return 'Unknown Location';
+
+      // 🌟 逆向地理编码：经纬度 -> 真实地址
+      const [place] = await Location.reverseGeocodeAsync({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+
+      if (place) {
+        const street = place.streetNumber
+          ? `${place.streetNumber} ${place.street || ''}`
+          : place.street || place.name || '';
+        const city = place.city || place.subregion || '';
+
+        const addressStr = [street, city].filter(Boolean).join(', ');
+        return addressStr || 'Unknown Address';
+      }
+    } catch (error) {
+      console.log('Reverse geocoding error:', error);
+    }
+    return 'Location Pin'; // 如果全失败了，才显示这个保底文案
   },
 };
