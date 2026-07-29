@@ -2,24 +2,54 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Linking,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAllTrips, insertTrip } from '../db/database';
+import { AuthService } from '../utils/AuthService';
 import { calculateTaxDeduction } from '../utils/TaxEngine';
 
 export const ReportsScreen = () => {
+  // 🌟 新增：Face ID / 密码锁 开关 State
+  const [faceIdEnabled, setFaceIdEnabled] = useState(false);
+
   // 🌟 新增：PDF 导出筛选条件 State
   const [selectedYear, setSelectedYear] = useState<string>('2026');
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'business' | 'personal'>('business');
+
+  // 🌟 初始化时读取本地保存的锁屏设置
+  useEffect(() => {
+    AuthService.isFaceIdEnabled().then((enabled) => {
+      setFaceIdEnabled(enabled);
+    });
+  }, []);
+
+  // 🌟 处理用户切换锁屏开关的逻辑
+  const handleToggleFaceId = async (newValue: boolean) => {
+    if (newValue) {
+      // 当用户开启锁屏时，先验证一次生物识别/密码
+      const success = await AuthService.authenticate();
+      if (success) {
+        setFaceIdEnabled(true);
+        await AuthService.setFaceIdEnabled(true);
+      } else {
+        Alert.alert('Authentication Failed', 'Could not verify Face ID / Passcode.');
+      }
+    } else {
+      // 关闭锁屏不需要验证，直接保存关闭
+      setFaceIdEnabled(false);
+      await AuthService.setFaceIdEnabled(false);
+    }
+  };
 
   // 1. 打开订阅 Paywall
   const handleUpgrade = () => {
@@ -296,7 +326,29 @@ export const ReportsScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* 📄 2. 报表与导出区（智能筛选配置 ‼️） */}
+        {/* 🔒 2. 安全与锁屏开关区（新功能 🌟） */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>🔒 Privacy & Security</Text>
+          <Text style={styles.cardDesc}>
+            Control app lock settings to protect your driving records.
+          </Text>
+
+          <View style={styles.settingRow}>
+            <View style={{ flex: 1, marginRight: 10 }}>
+              <Text style={styles.settingLabel}>Face ID / Passcode Lock</Text>
+              <Text style={styles.settingSub}>
+                Require authentication when opening the app
+              </Text>
+            </View>
+            <Switch
+              value={faceIdEnabled}
+              onValueChange={handleToggleFaceId}
+              trackColor={{ false: '#e5e5ea', true: '#34c759' }}
+            />
+          </View>
+        </View>
+
+        {/* 📄 3. 报表与导出区（智能筛选配置 ‼️） */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>📄 Official Tax Reports</Text>
           <Text style={styles.cardDesc}>
@@ -367,7 +419,7 @@ export const ReportsScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* 🛡️ 3. 数据安全与备份区 */}
+        {/* 🛡️ 4. 数据安全与备份区 */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🛡️ Data Backup & Safety</Text>
           <Text style={styles.cardDesc}>
@@ -389,7 +441,7 @@ export const ReportsScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* ⚖️ 4. 法律协议与支持 */}
+        {/* ⚖️ 5. 法律协议与支持 */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>⚖️ Legal & Support</Text>
 
@@ -433,7 +485,17 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 17, fontWeight: 'bold', color: '#1c1c1e', marginBottom: 6 },
   cardDesc: { fontSize: 13, color: '#8e8e93', marginBottom: 15 },
 
-  // 🌟 筛选器样式
+  // 🌟 Switch 开关行样式
+  settingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  settingLabel: { fontSize: 15, fontWeight: '600', color: '#1c1c1e' },
+  settingSub: { fontSize: 12, color: '#8e8e93', marginTop: 2 },
+
+  // 筛选器样式
   filterGroup: { marginBottom: 14 },
   filterLabel: { fontSize: 12, fontWeight: 'bold', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 6 },
   segmentContainer: { flexDirection: 'row', backgroundColor: '#f2f2f7', borderRadius: 9, padding: 2 },

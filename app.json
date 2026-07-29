@@ -9,8 +9,10 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We need your location to measure driving distance for tax deduction reports.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
+        "NSLocationAlwaysUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
         "UIBackgroundModes": [
-          "location"
+          "location",
+          "fetch"
         ]
       }
     },
