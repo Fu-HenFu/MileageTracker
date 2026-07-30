@@ -62,17 +62,22 @@ TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }: any) => {
 // 🌟 导出 LocationService 对象
 export const LocationService = {
   // 1. 开始追踪
+// 1. 开始追踪（优先后台定位，若无后台权限则降级为前台定位）
   startTracking: async (): Promise<boolean> => {
+    // 1️⃣ 请求前台权限
     const { status: foregroundStatus } =
       await Location.requestForegroundPermissionsAsync();
     if (foregroundStatus !== 'granted') return false;
 
-    const { status: backgroundStatus } =
-      await Location.requestBackgroundPermissionsAsync();
-    if (backgroundStatus !== 'granted') return false;
-
     totalMeters = 0;
     lastCoords = null;
+
+    // 2️⃣ 尝试请求后台权限
+    const { status: backgroundStatus } =
+      await Location.requestBackgroundPermissionsAsync();
+
+    // 🌟 降级处理：如果没有“始终允许”权限，依然启动前台定位服务，不直接退出
+    const hasBackgroundPermission = backgroundStatus === 'granted';
 
     const hasStarted = await Location.hasStartedLocationUpdatesAsync(
       LOCATION_TASK_NAME
@@ -81,18 +86,21 @@ export const LocationService = {
       await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     }
 
+    // 启动定位
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.BestForNavigation,
       timeInterval: 2000,
       distanceInterval: 5,
       showsBackgroundLocationIndicator: true,
+      // 只有拥有后台权限时才在后台保持运行
+      pausesUpdatesAutomatically: !hasBackgroundPermission,
       foregroundService: {
         notificationTitle: 'Mileage Tracker Active',
-        notificationBody: 'Tracking your drive in background...',
+        notificationBody: 'Tracking your drive...',
       },
     });
 
-    return true;
+    return true; // 只要前台权限拿到，就允许开始测试！
   },
 
   // 2. 停止追踪并返回总行驶米数

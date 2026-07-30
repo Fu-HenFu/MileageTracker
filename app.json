@@ -10,6 +10,7 @@
         "NSLocationWhenInUseUsageDescription": "We need your location to measure driving distance for tax deduction reports.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
         "NSLocationAlwaysUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
+        "NSFaceIDUsageDescription": "TaxMiles needs Face ID to secure your driving and tax records.",
         "UIBackgroundModes": [
           "location",
           "fetch"
@@ -24,8 +25,18 @@
           "isIosBackgroundLocationEnabled": true
         }
       ],
+      "expo-local-authentication",
       "expo-sqlite",
       "expo-font"
-    ]
+    ],
+    "android": {
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ],
+      "package": "com.zovito.mileagetracker"
+    }
   }
 }

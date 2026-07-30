@@ -14,36 +14,43 @@ const Tab = createBottomTabNavigator();
 
 export default function App() {
   const [isUnlocked, setIsUnlocked] = useState(false);
-  // 🌟 用 ref 记录当前的 App 状态，避免在组件刷新时重置
   const appState = useRef<AppStateStatus>(AppState.currentState);
   const isAuthenticating = useRef<boolean>(false);
 
   const checkAuth = async () => {
-    // 防止重复并发调起生物识别弹窗
-    if (isAuthenticating.current) return;
-    isAuthenticating.current = true;
+    try {
+      // 🌟 先检查用户是否开启了 Face ID
+      const isEnabled = await AuthService.isFaceIdEnabled();
+      if (!isEnabled) {
+        setIsUnlocked(true); // 关掉了直接解锁，不弹窗
+        return;
+      }
 
-    const success = await AuthService.authenticate();
-    setIsUnlocked(success);
+      if (isAuthenticating.current) return;
+      isAuthenticating.current = true;
 
-    isAuthenticating.current = false;
+      const success = await AuthService.authenticate();
+      setIsUnlocked(success);
+    } catch (error) {
+      console.error('CheckAuth Error:', error);
+      setIsUnlocked(false);
+    } finally {
+      isAuthenticating.current = false;
+    }
   };
 
   useEffect(() => {
-    // 1. 初始化 SQLite 数据库表
     try {
       initDatabase();
     } catch (error) {
       console.error('Failed to initialize database:', error);
     }
 
-    // 2. 首次打开 App 调起解锁
+    // 打开 App 时检查权限状态
     checkAuth();
 
-    // 3. 监听 App 切后台 / 切前台事件
+    // 监听切前后台
     const subscription = AppState.addEventListener('change', (nextAppState) => {
-      // 🌟 关键修复：只有当应用从真实的后台 (background) 切回前台 (active) 时才要求重新验证
-      // 避开系统弹窗导致的 inactive -> active 伪前台切换
       if (
         appState.current === 'background' &&
         nextAppState === 'active'
@@ -58,7 +65,6 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
-  // 🔒 未通过验证时展示黑色锁屏界面，并提供“点击解锁”按钮
   if (!isUnlocked) {
     return (
       <View style={styles.lockScreen}>
@@ -71,7 +77,6 @@ export default function App() {
     );
   }
 
-  // 🔓 验证通过后渲染完整的 Tab 导航
   return (
     <SafeAreaProvider>
       <NavigationContainer>
