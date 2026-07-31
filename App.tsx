@@ -17,25 +17,32 @@ export default function App() {
   const appState = useRef<AppStateStatus>(AppState.currentState);
   const isAuthenticating = useRef<boolean>(false);
 
-  const checkAuth = async () => {
+  // 🌟 checkAuth 接收 isManual 参数：如果手动点击按钮，强制重置防重复锁
+  const checkAuth = async (isManual = false) => {
+    if (isManual) {
+      isAuthenticating.current = false;
+    } else if (isAuthenticating.current) {
+      return;
+    }
+
     try {
-      // 🌟 先检查用户是否开启了 Face ID
       const isEnabled = await AuthService.isFaceIdEnabled();
       if (!isEnabled) {
-        setIsUnlocked(true); // 关掉了直接解锁，不弹窗
+        setIsUnlocked(true);
         return;
       }
 
-      if (isAuthenticating.current) return;
       isAuthenticating.current = true;
-
       const success = await AuthService.authenticate();
       setIsUnlocked(success);
     } catch (error) {
       console.error('CheckAuth Error:', error);
       setIsUnlocked(false);
     } finally {
-      isAuthenticating.current = false;
+      // 验证结束后 300ms 释放锁
+      setTimeout(() => {
+        isAuthenticating.current = false;
+      }, 300);
     }
   };
 
@@ -46,17 +53,23 @@ export default function App() {
       console.error('Failed to initialize database:', error);
     }
 
-    // 打开 App 时检查权限状态
+    // 冷启动检查
     checkAuth();
 
     // 监听切前后台
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (
         appState.current === 'background' &&
-        nextAppState === 'active'
+        nextAppState === 'active' &&
+        !isAuthenticating.current
       ) {
-        setIsUnlocked(false);
-        checkAuth();
+        AuthService.isFaceIdEnabled().then((isEnabled) => {
+          if (isEnabled) {
+            setIsUnlocked(false);
+            // 🌟 给予 400ms 硬件就绪时间，避免 iOS 刚切回前台时摄像头没就绪而静默取消
+            setTimeout(() => checkAuth(), 400);
+          }
+        });
       }
 
       appState.current = nextAppState;
@@ -70,7 +83,8 @@ export default function App() {
       <View style={styles.lockScreen}>
         <Text style={styles.lockIcon}>🔒</Text>
         <Text style={styles.lockText}>TaxMiles is Locked</Text>
-        <TouchableOpacity style={styles.unlockBtn} onPress={checkAuth}>
+        {/* 🌟 核心：手动点击按钮传入 true，强行重置状态并再次发起 Face ID 刷脸 */}
+        <TouchableOpacity style={styles.unlockBtn} onPress={() => checkAuth(true)}>
           <Text style={styles.unlockBtnText}>Unlock App</Text>
         </TouchableOpacity>
       </View>

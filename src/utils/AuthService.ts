@@ -5,21 +5,7 @@ import { Alert } from 'react-native';
 const FACE_ID_SETTING_KEY = '@taxmiles_face_id_enabled';
 
 export const AuthService = {
-  // 1. 检查设备是否支持并开启了 Face ID
-  async isBiometricAvailable(): Promise<boolean> {
-    const hasHardware = await LocalAuthentication.hasHardwareAsync();
-    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-    const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
-
-    // 检查硬件类型中是否包含 Face ID (FACIAL_RECOGNITION = 2)
-    const supportsFaceID = types.includes(
-      LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION
-    );
-
-    return hasHardware && isEnrolled && supportsFaceID;
-  },
-
-  // 2. 读取开关设置
+  // 1. 读取开关设置
   async isFaceIdEnabled(): Promise<boolean> {
     try {
       const value = await AsyncStorage.getItem(FACE_ID_SETTING_KEY);
@@ -29,7 +15,7 @@ export const AuthService = {
     }
   },
 
-  // 3. 保存开关设置
+  // 2. 保存开关设置
   async setFaceIdEnabled(enabled: boolean): Promise<void> {
     try {
       await AsyncStorage.setItem(FACE_ID_SETTING_KEY, enabled ? 'true' : 'false');
@@ -38,24 +24,33 @@ export const AuthService = {
     }
   },
 
-  // 4. 调起系统原生 Face ID
+  // 🌟 3. 调起 Face ID 认证（带静默失败拦截）
   async authenticate(): Promise<boolean> {
     try {
-      const isAvailable = await LocalAuthentication.isEnrolledAsync();
-      if (!isAvailable) {
-        Alert.alert('Notice', 'Please set up Face ID or Passcode in iPhone Settings.');
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+      if (!hasHardware || !isEnrolled) {
+        Alert.alert(
+          'Face ID Required',
+          'Please set up Face ID in your iPhone Settings first.'
+        );
         return false;
       }
 
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock TaxMiles using Face ID',
-        fallbackLabel: 'Use Passcode',
+        disableDeviceFallback: true, // 保持纯刷脸
         cancelLabel: 'Cancel',
-        disableDeviceFallback: false,
       });
 
+      // 🌟 如果扫脸失败/被取消，给出日志提示，防止静默卡死
+      if (!result.success) {
+        console.log('❌ Face ID failed/cancelled:', result.error);
+      }
+
       return result.success;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Authentication Error:', error);
       return false;
     }

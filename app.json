@@ -14,7 +14,8 @@
         "UIBackgroundModes": [
           "location",
           "fetch"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "plugins": [
@@ -25,7 +26,12 @@
           "isIosBackgroundLocationEnabled": true
         }
       ],
-      "expo-local-authentication",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "TaxMiles needs Face ID to secure your driving and tax records."
+        }
+      ],
       "expo-sqlite",
       "expo-font"
     ],
@@ -37,6 +43,11 @@
         "android.permission.USE_FINGERPRINT"
       ],
       "package": "com.zovito.mileagetracker"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2cd85973-6e58-4858-bc5b-32c0bc6440cb"
+      }
     }
   }
 }

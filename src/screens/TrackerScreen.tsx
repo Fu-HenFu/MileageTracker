@@ -58,6 +58,7 @@ export const TrackerScreen = () => {
       );
     }
   };
+  
 
   // 🔴 结束行程时：获取终点真实地址并存入数据库
   const handleStopTracking = async () => {
