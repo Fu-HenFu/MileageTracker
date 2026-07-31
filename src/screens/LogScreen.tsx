@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,44 +20,136 @@ import {
 } from '../db/database';
 import { calculateTaxDeduction } from '../utils/TaxEngine';
 
+// 月份字典
+const MONTH_OPTIONS = [
+  { label: 'All Months', value: 'ALL' },
+  { label: 'Jan', value: '1' },
+  { label: 'Feb', value: '2' },
+  { label: 'Mar', value: '3' },
+  { label: 'Apr', value: '4' },
+  { label: 'May', value: '5' },
+  { label: 'Jun', value: '6' },
+  { label: 'Jul', value: '7' },
+  { label: 'Aug', value: '8' },
+  { label: 'Sep', value: '9' },
+  { label: 'Oct', value: '10' },
+  { label: 'Nov', value: '11' },
+  { label: 'Dec', value: '12' },
+];
+
 export const LogScreen = () => {
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [searchText, setSearchText] = useState<string>('');
   const [selectedTrip, setSelectedTrip] = useState<TripRecord | null>(null);
 
+  // 1. 筛选条件 State
+  const [selectedYear, setSelectedYear] = useState<string>('2026');
+  const [selectedMonth, setSelectedMonth] = useState<string>('ALL');
+  const [selectedCategory, setSelectedCategory] = useState<'all' | 'business' | 'personal'>('all');
+
+  // 每次进入页面刷新数据
   // 每次进入页面刷新数据
   useFocusEffect(
     useCallback(() => {
-      setTrips(getAllTrips());
+      // 🌟 关键修复：加上 || [] 防护，确保 realTrips 必定是数组，防止 ... 展开报错
+      const realTrips = getAllTrips() || [];
+
+      // 🧪 【测试用】伪造一条 2027 年 5 月 20 日的行程数据
+      const mock2027Trip: TripRecord = {
+        id: 99999,
+        start_time: '2027-05-20T10:00:00.000Z',
+        end_time: '2027-05-20T10:30:00.000Z',
+        distance_meters: 20000,
+        category: 'business',
+        country_code: 'US',
+        deduction_amount: 13.40,
+        start_address: '777 Future St, New York',
+        end_address: '888 Tech Center, New York',
+      };
+
+      setTrips([mock2027Trip, ...realTrips]);
     }, [])
   );
 
-  // 🔍 根据搜索关键词过滤行程列表
-  const filteredTrips = useMemo(() => {
-    if (!searchText.trim()) return trips;
-    const query = searchText.toLowerCase();
-    return trips.filter(
-      (t) =>
-        t.start_address.toLowerCase().includes(query) ||
-        t.end_address.toLowerCase().includes(query)
-    );
-  }, [trips, searchText]);
+  // 🌟 动态计算年份（零硬编码，随数据自然增长）
+  const availableYears = useMemo(() => {
+    const currentYear = new Date().getFullYear().toString(); // 获取今年，如 "2026"
+    const yearsSet = new Set<string>();
 
-  // 🌟 修改历史行程分类并重新计算抵税额
+    // 1. 始终把当前年份作为保底选项
+    yearsSet.add(currentYear);
+
+    // 2. 只有当数据库里确实存在其他年份的数据时，才收集进来
+    trips.forEach((t) => {
+      if (t.start_time) {
+        const yearStr = new Date(t.start_time).getFullYear().toString();
+        yearsSet.add(yearStr);
+      }
+    });
+
+    // 从大到小排序：2027, 2026...
+    const sortedYears = Array.from(yearsSet).sort((a, b) => Number(b) - Number(a));
+
+    // 🌟 关键 UX 细节：如果只有今年 1 个年份，就不需要 'ALL'，避免界面啰嗦
+    if (sortedYears.length === 1) {
+      return sortedYears; // ['2026']
+    }
+
+    // 有多个年份时，才显示 'ALL' 汇总选项
+    return ['ALL', ...sortedYears]; // ['ALL', '2027', '2026']
+  }, [trips]);
+
+  // 🔍 核心过滤逻辑 (年份 + 月份 + 类别 + 关键字)
+  const filteredTrips = useMemo(() => {
+    return trips.filter((t) => {
+      const tripDate = new Date(t.start_time);
+      const tripYear = tripDate.getFullYear().toString();
+      const tripMonth = (tripDate.getMonth() + 1).toString();
+
+      // 1️⃣ 按年份过滤
+      if (selectedYear !== 'ALL' && tripYear !== selectedYear) {
+        return false;
+      }
+
+      // 2️⃣ 按月份过滤
+      if (selectedMonth !== 'ALL' && tripMonth !== selectedMonth) {
+        return false;
+      }
+
+      // 3️⃣ 按分类过滤
+      if (selectedCategory !== 'all' && t.category !== selectedCategory) {
+        return false;
+      }
+
+      // 4️⃣ 按关键字过滤
+      if (searchText.trim()) {
+        const query = searchText.toLowerCase();
+        const matchStart = t.start_address.toLowerCase().includes(query);
+        const matchEnd = t.end_address.toLowerCase().includes(query);
+        if (!matchStart && !matchEnd) return false;
+      }
+
+      return true;
+    });
+  }, [trips, selectedYear, selectedMonth, selectedCategory, searchText]);
+
+  // 📊 动态计算当前视图汇总金额
+  const filteredTotalDeduction = useMemo(() => {
+    return filteredTrips.reduce((sum, t) => sum + t.deduction_amount, 0);
+  }, [filteredTrips]);
+
+  // 修改历史行程分类
   const handleCategoryChange = (
     trip: TripRecord,
     newCategory: 'business' | 'personal'
   ) => {
     if (!trip.id || trip.category === newCategory) return;
 
-    // 重新计算抵税金额
     const taxRes = calculateTaxDeduction(trip.distance_meters, trip.country_code);
     const newDeduction = newCategory === 'business' ? taxRes.deductionAmount : 0;
 
-    // 更新数据库
     updateTripCategory(trip.id, newCategory, newDeduction);
 
-    // 刷新 Modal 视图及全局列表
     const updatedTrip = {
       ...trip,
       category: newCategory,
@@ -66,7 +159,7 @@ export const LogScreen = () => {
     setTrips(getAllTrips());
   };
 
-  // 🗑️ 单条删除带二次确认
+  // 删除单条
   const handleConfirmDelete = (id?: number) => {
     if (!id) return;
     Alert.alert(
@@ -87,20 +180,20 @@ export const LogScreen = () => {
     );
   };
 
-  // 🧹 一键清空所有数据带二次确认
+  // 清空当前视图
   const handleClearAll = () => {
-    if (trips.length === 0) return;
+    if (filteredTrips.length === 0) return;
     Alert.alert(
-      'Clear All Logs',
-      `Are you sure you want to permanently delete ALL ${trips.length} trip records? This action cannot be undone.`,
+      'Clear Filtered Logs',
+      `Are you sure you want to delete ${filteredTrips.length} trip records in this current view?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Clear All',
+          text: 'Clear Selected',
           style: 'destructive',
           onPress: () => {
-            trips.forEach((t) => t.id && deleteTrip(t.id));
-            setTrips([]);
+            filteredTrips.forEach((t) => t.id && deleteTrip(t.id));
+            setTrips(getAllTrips());
             setSelectedTrip(null);
           },
         },
@@ -108,16 +201,125 @@ export const LogScreen = () => {
     );
   };
 
+  // 动态生成标题文案
+  const filterTitle = useMemo(() => {
+    const yearStr = selectedYear === 'ALL' ? 'All-Time' : selectedYear;
+    const monthObj = MONTH_OPTIONS.find((m) => m.value === selectedMonth);
+    const monthStr = selectedMonth === 'ALL' ? '' : `${monthObj?.label || ''}`;
+    return `${yearStr} ${monthStr}`.trim();
+  }, [selectedYear, selectedMonth]);
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* 顶部标题栏与清空按钮 */}
+      {/* 顶部标题栏 */}
       <View style={styles.headerRow}>
-        <Text style={styles.headerTitle}>All Driving Logs ({filteredTrips.length})</Text>
-        {trips.length > 0 && (
+        <Text style={styles.headerTitle}>Driving Logs ({filteredTrips.length})</Text>
+        {filteredTrips.length > 0 && (
           <TouchableOpacity onPress={handleClearAll}>
-            <Text style={styles.clearAllText}>Clear All</Text>
+            <Text style={styles.clearAllText}>Clear View</Text>
           </TouchableOpacity>
         )}
+      </View>
+
+      {/* 🌟 筛选控制区 */}
+      <View style={styles.filterSection}>
+
+        {/* 1. 年份可滑动选择器（🌟 只有存在 2 个及以上年份时才渲染，避免首年界面啰嗦） */}
+        {availableYears.length > 1 && (
+          <View style={styles.filterRow}>
+            <Text style={styles.filterLabel}>YEAR:</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingRight: 10 }}
+            >
+              {availableYears.map((year) => (
+                <TouchableOpacity
+                  key={year}
+                  style={[
+                    styles.chipBtn,
+                    selectedYear === year && styles.activeChipBtn,
+                  ]}
+                  onPress={() => setSelectedYear(year)}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      selectedYear === year && styles.activeChipText,
+                    ]}
+                  >
+                    {year === 'ALL' ? 'All Years' : year}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* 2. 月份可滑动选择器 */}
+        <View style={[styles.filterRow, availableYears.length > 1 && { marginTop: 8 }]}>
+          <Text style={styles.filterLabel}>MONTH:</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingRight: 10 }}
+          >
+            {MONTH_OPTIONS.map((item) => (
+              <TouchableOpacity
+                key={item.value}
+                style={[
+                  styles.chipBtn,
+                  selectedMonth === item.value && styles.activeChipBtn,
+                ]}
+                onPress={() => setSelectedMonth(item.value)}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    selectedMonth === item.value && styles.activeChipText,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        {/* 3. 类别按钮 */}
+        <View style={[styles.segmentContainer, { marginTop: 10 }]}>
+          {[
+            { label: 'All Categories', value: 'all' },
+            { label: 'Business', value: 'business' },
+            { label: 'Personal', value: 'personal' },
+          ].map((item) => (
+            <TouchableOpacity
+              key={item.value}
+              style={[
+                styles.segmentBtn,
+                selectedCategory === item.value && styles.activeSegmentBtn,
+              ]}
+              onPress={() => setSelectedCategory(item.value as any)}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  selectedCategory === item.value && styles.activeSegmentText,
+                ]}
+              >
+                {item.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      {/* 📊 动态结果汇总卡片 */}
+      <View style={styles.summaryBar}>
+        <Text style={styles.summaryBarLabel}>{filterTitle} Savings:</Text>
+        <Text style={styles.summaryBarValue}>
+          ${filteredTotalDeduction.toFixed(2)}
+        </Text>
       </View>
 
       {/* 🔍 搜索框 */}
@@ -145,7 +347,6 @@ export const LogScreen = () => {
               activeOpacity={0.7}
               onPress={() => setSelectedTrip(item)}
             >
-              {/* 行程路线与时间 */}
               <View style={{ flex: 1, marginRight: 8 }}>
                 <View style={styles.addressRow}>
                   <View style={[styles.dot, { backgroundColor: '#30d158' }]} />
@@ -166,7 +367,6 @@ export const LogScreen = () => {
                 </Text>
               </View>
 
-              {/* 右侧金额与快捷删除按钮 */}
               <View style={{ alignItems: 'flex-end' }}>
                 <Text
                   style={[
@@ -190,13 +390,15 @@ export const LogScreen = () => {
         ListEmptyComponent={
           <View style={styles.emptyBox}>
             <Text style={styles.emptyText}>
-              {searchText ? 'No matching trips found.' : 'No trips recorded yet.'}
+              {searchText
+                ? 'No matching trips found.'
+                : `No records found for ${filterTitle}.`}
             </Text>
           </View>
         }
       />
 
-      {/* 🔍 行程详情 Modal 弹窗 */}
+      {/* 🔍 行程详情 Modal */}
       <Modal
         visible={!!selectedTrip}
         animationType="slide"
@@ -259,7 +461,6 @@ export const LogScreen = () => {
                     </Text>
                   </View>
 
-                  {/* 🌟 动态分段按钮：可以在日志页面随时修改历史分类 */}
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Category</Text>
                     <View style={styles.modalCategoryToggle}>
@@ -317,11 +518,30 @@ export const LogScreen = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f4f6', padding: 16 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 15 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 12 },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#1c1c1e' },
-  clearAllText: { fontSize: 14, color: '#ff3b30', fontWeight: '600' },
+  clearAllText: { fontSize: 13, color: '#ff3b30', fontWeight: '600' },
 
-  searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 15, borderWidth: 1, borderColor: '#e5e5ea' },
+  filterSection: { marginBottom: 10 },
+  filterRow: { flexDirection: 'row', alignItems: 'center' },
+  filterLabel: { fontSize: 11, fontWeight: 'bold', color: '#8e8e93', marginRight: 8, width: 48 },
+
+  chipBtn: { paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14, backgroundColor: '#e5e5ea', marginRight: 6 },
+  activeChipBtn: { backgroundColor: '#007AFF' },
+  chipText: { fontSize: 12, color: '#666', fontWeight: '600' },
+  activeChipText: { color: '#fff', fontWeight: 'bold' },
+
+  segmentContainer: { flexDirection: 'row', backgroundColor: '#e5e5ea', borderRadius: 9, padding: 2 },
+  segmentBtn: { flex: 1, paddingVertical: 6, alignItems: 'center', borderRadius: 7 },
+  activeSegmentBtn: { backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 2, elevation: 2 },
+  segmentText: { fontSize: 12, color: '#8e8e93', fontWeight: '600' },
+  activeSegmentText: { color: '#1c1c1e', fontWeight: 'bold' },
+
+  summaryBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginBottom: 10 },
+  summaryBarLabel: { fontSize: 13, fontWeight: '600', color: '#8e8e93' },
+  summaryBarValue: { fontSize: 16, fontWeight: 'bold', color: '#30d158' },
+
+  searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 12, borderWidth: 1, borderColor: '#e5e5ea' },
   searchIcon: { fontSize: 14, marginRight: 8 },
   searchInput: { flex: 1, fontSize: 14, color: '#1c1c1e' },
 
@@ -334,8 +554,8 @@ const styles = StyleSheet.create({
   quickDeleteBtn: { marginTop: 6, padding: 2 },
   quickDeleteText: { fontSize: 14 },
 
-  emptyBox: { alignItems: 'center', marginTop: 50 },
-  emptyText: { color: '#8e8e93', fontSize: 15 },
+  emptyBox: { alignItems: 'center', marginTop: 40, paddingHorizontal: 20 },
+  emptyText: { color: '#8e8e93', fontSize: 14, textAlign: 'center' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 },
@@ -349,7 +569,6 @@ const styles = StyleSheet.create({
   detailLabel: { color: '#8e8e93', fontSize: 14 },
   detailValue: { color: '#1c1c1e', fontSize: 14, fontWeight: '500', maxWidth: '65%', textAlign: 'right' },
 
-  // Modal 内部分类切换控件样式
   modalCategoryToggle: { flexDirection: 'row', backgroundColor: '#e5e5ea', borderRadius: 8, padding: 2 },
   modalCatBtn: { paddingVertical: 5, paddingHorizontal: 12, borderRadius: 6 },
   modalCatBtnActive: { backgroundColor: '#007AFF' },

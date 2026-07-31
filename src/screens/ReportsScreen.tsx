@@ -2,7 +2,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Linking,
@@ -14,29 +14,27 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getAllTrips, insertTrip } from '../db/database';
+import { getAllTrips, insertTrip, TripRecord } from '../db/database';
 import { AuthService } from '../utils/AuthService';
 import { calculateTaxDeduction } from '../utils/TaxEngine';
 
 export const ReportsScreen = () => {
-  // 🌟 新增：Face ID / 密码锁 开关 State
   const [faceIdEnabled, setFaceIdEnabled] = useState(false);
 
-  // 🌟 新增：PDF 导出筛选条件 State
+  // 报表筛选条件 State
   const [selectedYear, setSelectedYear] = useState<string>('2026');
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'business' | 'personal'>('business');
 
-  // 🌟 初始化时读取本地保存的锁屏设置
+  // 初始化读取 Face ID 设置
   useEffect(() => {
     AuthService.isFaceIdEnabled().then((enabled) => {
       setFaceIdEnabled(enabled);
     });
   }, []);
 
-  // 🌟 处理用户切换锁屏开关的逻辑
+  // 处理切换 Face ID 开关
   const handleToggleFaceId = async (newValue: boolean) => {
     if (newValue) {
-      // 当用户开启锁屏时，先验证一次生物识别/密码
       const success = await AuthService.authenticate();
       if (success) {
         setFaceIdEnabled(true);
@@ -45,45 +43,59 @@ export const ReportsScreen = () => {
         Alert.alert('Authentication Failed', 'Could not verify Face ID / Passcode.');
       }
     } else {
-      // 关闭锁屏不需要验证，直接保存关闭
       setFaceIdEnabled(false);
       await AuthService.setFaceIdEnabled(false);
     }
   };
 
-  // 1. 打开订阅 Paywall
   const handleUpgrade = () => {
     Alert.alert('TaxMiles Pro', 'Opening Subscription Paywall...');
   };
 
-  // 2. 恢复购买
   const handleRestore = () => {
     Alert.alert('Restore Purchase', 'Checking for previous subscriptions...');
   };
 
-  // 📄 3. 根据筛选条件，生成并导出 PDF 报表 (智能筛选核心 ‼️)
-  const handleExportPDF = async () => {
+  // 🔍 1. 获取符合筛选条件的行程列表
+  const filteredTrips = useMemo(() => {
+    let trips = getAllTrips() || [];
+
+    if (selectedYear !== 'ALL') {
+      trips = trips.filter(
+        (t) => new Date(t.start_time).getFullYear().toString() === selectedYear
+      );
+    }
+
+    if (selectedCategory !== 'all') {
+      trips = trips.filter((t) => t.category === selectedCategory);
+    }
+
+    return trips;
+  }, [selectedYear, selectedCategory]);
+
+  // 📊 2. 动态统计看板数据
+  const taxStats = useMemo(() => {
+    let totalDeduction = 0;
+    let totalMeters = 0;
+
+    filteredTrips.forEach((t) => {
+      totalDeduction += t.deduction_amount;
+      totalMeters += t.distance_meters;
+    });
+
+    const distanceRes = calculateTaxDeduction(totalMeters, 'US');
+
+    return {
+      totalDeduction,
+      totalTrips: filteredTrips.length,
+      formattedDistance: distanceRes.formattedDistance,
+    };
+  }, [filteredTrips]);
+
+  // 📈 3. 导出 CSV 格式表格（🌟 已加入 Business Purpose 列）
+  const handleExportCSV = async () => {
     try {
-      let trips = getAllTrips();
-
-      if (trips.length === 0) {
-        Alert.alert('No Data', 'There are no trips recorded to export.');
-        return;
-      }
-
-      // 🔍 1. 按年份过滤
-      if (selectedYear !== 'ALL') {
-        trips = trips.filter(
-          (t) => new Date(t.start_time).getFullYear().toString() === selectedYear
-        );
-      }
-
-      // 🔍 2. 按类别过滤
-      if (selectedCategory !== 'all') {
-        trips = trips.filter((t) => t.category === selectedCategory);
-      }
-
-      if (trips.length === 0) {
+      if (filteredTrips.length === 0) {
         Alert.alert(
           'No Matching Records',
           `No ${selectedCategory.toUpperCase()} trips found for ${selectedYear}.`
@@ -91,13 +103,61 @@ export const ReportsScreen = () => {
         return;
       }
 
-      // 计算过滤后的总金额与表格内容
+      // 🌟 1. CSV 表头加入 Business Purpose
+      let csvContent = 'Date,Start Address,End Address,Distance,Category,Country,Business Purpose,Deduction\n';
+
+      filteredTrips.forEach((t) => {
+        const res = calculateTaxDeduction(t.distance_meters, t.country_code);
+        const dateStr = new Date(t.start_time).toLocaleDateString();
+        const startAddr = `"${(t.start_address || '').replace(/"/g, '""')}"`;
+        const endAddr = `"${(t.end_address || '').replace(/"/g, '""')}"`;
+        const distance = `"${res.formattedDistance}"`;
+        const category = t.category.toUpperCase();
+        const country = t.country_code;
+        // 🌟 2. 处理商业目的字段转义
+        const purpose = `"${(t.notes || '').replace(/"/g, '""')}"`;
+        const deduction = `"$${t.deduction_amount.toFixed(2)}"`;
+
+        csvContent += `${dateStr},${startAddr},${endAddr},${distance},${category},${country},${purpose},${deduction}\n`;
+      });
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const fileName = `TaxMiles_${selectedYear}_${selectedCategory.toUpperCase()}_${dateStr}.csv`;
+      const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+
+      await FileSystem.writeAsStringAsync(fileUri, csvContent);
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/csv',
+          dialogTitle: `Export CSV Tax Report`,
+          UTI: 'public.comma-separated-values-text',
+        });
+      }
+    } catch (error) {
+      console.error('CSV Generation Error:', error);
+      Alert.alert('Error', 'Failed to generate CSV report.');
+    }
+  };
+
+  // 📄 4. 导出 PDF 报表（🌟 已加入 Business Purpose 列）
+  const handleExportPDF = async () => {
+    try {
+      if (filteredTrips.length === 0) {
+        Alert.alert(
+          'No Matching Records',
+          `No ${selectedCategory.toUpperCase()} trips found for ${selectedYear}.`
+        );
+        return;
+      }
+
       let totalDeduction = 0;
-      const rowsHtml = trips
+      const rowsHtml = filteredTrips
         .map((t) => {
           const res = calculateTaxDeduction(t.distance_meters, t.country_code);
           totalDeduction += t.deduction_amount;
           const dateStr = new Date(t.start_time).toLocaleDateString();
+          const purposeStr = t.notes ? t.notes : '<span style="color: #c7c7cc;">N/A</span>';
 
           return `
             <tr>
@@ -105,13 +165,13 @@ export const ReportsScreen = () => {
               <td><b>${t.start_address}</b> &rarr; <b>${t.end_address}</b></td>
               <td>${res.formattedDistance}</td>
               <td>${t.category.toUpperCase()}</td>
+              <td>${purposeStr}</td>
               <td style="color: #30d158; font-weight: bold; text-align: right;">+${res.formattedDeduction}</td>
             </tr>
           `;
         })
         .join('');
 
-      // 动态生成的 PDF 标题
       const reportTitle = `${selectedYear === 'ALL' ? 'All-Time' : selectedYear} ${selectedCategory.toUpperCase()} Mileage Report`;
 
       const htmlContent = `
@@ -136,7 +196,7 @@ export const ReportsScreen = () => {
           <body>
             <div class="header">
               <h1>TaxMiles • ${reportTitle}</h1>
-              <div class="subtitle">Official Audit-Ready Record • Generated on ${new Date().toLocaleDateString()} (${trips.length} trips)</div>
+              <div class="subtitle">Official Audit-Ready Record • Generated on ${new Date().toLocaleDateString()} (${filteredTrips.length} trips)</div>
             </div>
 
             <div class="summary-box">
@@ -151,6 +211,7 @@ export const ReportsScreen = () => {
                   <th>Route (Start &rarr; End)</th>
                   <th>Distance</th>
                   <th>Category</th>
+                  <th>Business Purpose</th>
                   <th style="text-align: right;">Deduction</th>
                 </tr>
               </thead>
@@ -174,8 +235,6 @@ export const ReportsScreen = () => {
           mimeType: 'application/pdf',
           dialogTitle: `Export ${reportTitle}`,
         });
-      } else {
-        Alert.alert('PDF Generated', `File saved at: ${uri}`);
       }
     } catch (error) {
       console.error('PDF Generation Error:', error);
@@ -183,10 +242,10 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 🛡️ 4. 导出 JSON 数据备份文件
+  // 🛡️ 5. 导出 JSON 数据备份
   const handleBackup = async () => {
     try {
-      const trips = getAllTrips();
+      const trips = getAllTrips() || [];
 
       if (trips.length === 0) {
         Alert.alert('No Data', 'There are no trips recorded to back up.');
@@ -223,7 +282,7 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 📥 5. 从 JSON 文件导入恢复数据
+  // 📥 6. 从 JSON 恢复数据
   const handleImport = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -277,6 +336,9 @@ export const ReportsScreen = () => {
                   deduction_amount: trip.deduction_amount || 0,
                   start_address: trip.start_address || 'Start Location',
                   end_address: trip.end_address || 'End Location',
+                  notes: trip.notes || '',
+                  odometer_start: trip.odometer_start,
+                  odometer_end: trip.odometer_end,
                 });
                 count++;
               });
@@ -295,7 +357,6 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 6. 打开网页链接
   const openLink = (url: string) => {
     Linking.openURL(url).catch(() =>
       Alert.alert('Error', 'Cannot open URL link')
@@ -307,7 +368,7 @@ export const ReportsScreen = () => {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.headerTitle}>Settings & Reports</Text>
 
-        {/* 👑 1. 会员状态与订阅卡片 */}
+        {/* 👑 1. 会员状态 */}
         <View style={[styles.card, styles.proCard]}>
           <View style={styles.proBadgeRow}>
             <Text style={styles.proBadge}>FREE PLAN</Text>
@@ -326,7 +387,7 @@ export const ReportsScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* 🔒 2. 安全与锁屏开关区（新功能 🌟） */}
+        {/* 🔒 2. 安全与锁屏 */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🔒 Privacy & Security</Text>
           <Text style={styles.cardDesc}>
@@ -348,12 +409,34 @@ export const ReportsScreen = () => {
           </View>
         </View>
 
-        {/* 📄 3. 报表与导出区（智能筛选配置 ‼️） */}
+        {/* 📄 3. 报表与导出区 */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>📄 Official Tax Reports</Text>
           <Text style={styles.cardDesc}>
-            Select tax year and category to generate an audit-ready PDF.
+            Select tax year and category to generate audit-ready reports.
           </Text>
+
+          {/* 📊 动态报税统计看板 */}
+          <View style={styles.statsCard}>
+            <View style={styles.statsHeader}>
+              <Text style={styles.statsTitle}>
+                {selectedYear === 'ALL' ? 'All-Time' : selectedYear} {selectedCategory.toUpperCase()} SUMMARY
+              </Text>
+            </View>
+            <Text style={styles.statsAmount}>${taxStats.totalDeduction.toFixed(2)}</Text>
+
+            <View style={styles.statsMetaRow}>
+              <View style={styles.statsMetaItem}>
+                <Text style={styles.statsMetaLabel}>Trips Logged</Text>
+                <Text style={styles.statsMetaValue}>{taxStats.totalTrips}</Text>
+              </View>
+              <View style={styles.statsMetaDivider} />
+              <View style={styles.statsMetaItem}>
+                <Text style={styles.statsMetaLabel}>Total Distance</Text>
+                <Text style={styles.statsMetaValue}>{taxStats.formattedDistance}</Text>
+              </View>
+            </View>
+          </View>
 
           {/* 筛选配置 1: Tax Year */}
           <View style={styles.filterGroup}>
@@ -411,12 +494,16 @@ export const ReportsScreen = () => {
             </View>
           </View>
 
-          {/* 导出按钮 */}
-          <TouchableOpacity style={styles.actionBtn} onPress={handleExportPDF}>
-            <Text style={styles.actionBtnText}>
-              Export {selectedYear === 'ALL' ? '' : selectedYear} PDF Report
-            </Text>
-          </TouchableOpacity>
+          {/* 🌟 双导出按钮组合 */}
+          <View style={styles.exportBtnGroup}>
+            <TouchableOpacity style={[styles.actionBtn, styles.pdfBtn]} onPress={handleExportPDF}>
+              <Text style={styles.actionBtnText}>📄 PDF Report</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.actionBtn, styles.csvBtn]} onPress={handleExportCSV}>
+              <Text style={styles.actionBtnText}>📊 CSV Sheet</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* 🛡️ 4. 数据安全与备份区 */}
@@ -485,7 +572,6 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 17, fontWeight: 'bold', color: '#1c1c1e', marginBottom: 6 },
   cardDesc: { fontSize: 13, color: '#8e8e93', marginBottom: 15 },
 
-  // 🌟 Switch 开关行样式
   settingRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -495,7 +581,16 @@ const styles = StyleSheet.create({
   settingLabel: { fontSize: 15, fontWeight: '600', color: '#1c1c1e' },
   settingSub: { fontSize: 12, color: '#8e8e93', marginTop: 2 },
 
-  // 筛选器样式
+  statsCard: { backgroundColor: '#f2f2f7', padding: 14, borderRadius: 12, marginBottom: 16, borderLeftWidth: 4, borderLeftColor: '#30d158' },
+  statsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  statsTitle: { fontSize: 11, fontWeight: 'bold', color: '#8e8e93', textTransform: 'uppercase' },
+  statsAmount: { fontSize: 28, fontWeight: 'bold', color: '#30d158', marginVertical: 4 },
+  statsMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#e5e5ea' },
+  statsMetaItem: { flex: 1 },
+  statsMetaLabel: { fontSize: 11, color: '#8e8e93' },
+  statsMetaValue: { fontSize: 14, fontWeight: 'bold', color: '#1c1c1e', marginTop: 2 },
+  statsMetaDivider: { width: 1, height: 20, backgroundColor: '#e5e5ea', marginHorizontal: 10 },
+
   filterGroup: { marginBottom: 14 },
   filterLabel: { fontSize: 12, fontWeight: 'bold', color: '#8e8e93', textTransform: 'uppercase', marginBottom: 6 },
   segmentContainer: { flexDirection: 'row', backgroundColor: '#f2f2f7', borderRadius: 9, padding: 2 },
@@ -514,8 +609,11 @@ const styles = StyleSheet.create({
   restoreBtn: { paddingVertical: 8, alignItems: 'center' },
   restoreBtnText: { color: '#8e8e93', fontSize: 13, textDecorationLine: 'underline' },
 
-  actionBtn: { backgroundColor: '#007AFF', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 4 },
-  actionBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+  exportBtnGroup: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  actionBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  pdfBtn: { backgroundColor: '#007AFF' },
+  csvBtn: { backgroundColor: '#34c759' },
+  actionBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
 
   backupBtn: { backgroundColor: '#5856D6', marginBottom: 12, marginTop: 0 },
   restoreDataBtn: { backgroundColor: '#f2f2f7', borderWidth: 1, borderColor: '#e5e5ea', marginTop: 0 },
