@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import React, { useEffect, useRef, useState } from 'react';
@@ -6,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { initDatabase } from './src/db/database';
 import { LogScreen } from './src/screens/LogScreen';
+import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { ReportsScreen } from './src/screens/ReportsScreen';
 import { TrackerScreen } from './src/screens/TrackerScreen';
 import { AuthService } from './src/utils/AuthService';
@@ -14,10 +16,13 @@ const Tab = createBottomTabNavigator();
 
 export default function App() {
   const [isUnlocked, setIsUnlocked] = useState(false);
+  // 🌟 记录用户是否已完成新手引导 (null 代表数据还在读取中)
+  const [isOnboardingCompleted, setIsOnboardingCompleted] = useState<boolean | null>(null);
+
   const appState = useRef<AppStateStatus>(AppState.currentState);
   const isAuthenticating = useRef<boolean>(false);
 
-  // 🌟 checkAuth 接收 isManual 参数：如果手动点击按钮，强制重置防重复锁
+  // 🌟 检查锁屏认证状态
   const checkAuth = async (isManual = false) => {
     if (isManual) {
       isAuthenticating.current = false;
@@ -39,7 +44,6 @@ export default function App() {
       console.error('CheckAuth Error:', error);
       setIsUnlocked(false);
     } finally {
-      // 验证结束后 300ms 释放锁
       setTimeout(() => {
         isAuthenticating.current = false;
       }, 300);
@@ -47,16 +51,22 @@ export default function App() {
   };
 
   useEffect(() => {
+    // 1. 初始化数据库
     try {
       initDatabase();
     } catch (error) {
       console.error('Failed to initialize database:', error);
     }
 
-    // 冷启动检查
+    // 2. 读取本地保存的新手引导状态
+    AsyncStorage.getItem('@taxmiles_onboarding_completed').then((val) => {
+      setIsOnboardingCompleted(val === 'true');
+    });
+
+    // 3. 冷启动检查锁屏认证
     checkAuth();
 
-    // 监听切前后台
+    // 4. 监听前后台切换锁屏
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (
         appState.current === 'background' &&
@@ -66,7 +76,6 @@ export default function App() {
         AuthService.isFaceIdEnabled().then((isEnabled) => {
           if (isEnabled) {
             setIsUnlocked(false);
-            // 🌟 给予 400ms 硬件就绪时间，避免 iOS 刚切回前台时摄像头没就绪而静默取消
             setTimeout(() => checkAuth(), 400);
           }
         });
@@ -78,12 +87,12 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
+  // 1. 如果未通过安全解锁（开启了 Face ID 锁屏），展示锁屏页面
   if (!isUnlocked) {
     return (
       <View style={styles.lockScreen}>
         <Text style={styles.lockIcon}>🔒</Text>
         <Text style={styles.lockText}>TaxMiles is Locked</Text>
-        {/* 🌟 核心：手动点击按钮传入 true，强行重置状态并再次发起 Face ID 刷脸 */}
         <TouchableOpacity style={styles.unlockBtn} onPress={() => checkAuth(true)}>
           <Text style={styles.unlockBtnText}>Unlock App</Text>
         </TouchableOpacity>
@@ -91,6 +100,21 @@ export default function App() {
     );
   }
 
+  // 2. 如果数据正在读取中，保持空白等待
+  if (isOnboardingCompleted === null) {
+    return null;
+  }
+
+  // 3. 如果用户还没完成过引导页，优先展示 Onboarding 画面
+  if (!isOnboardingCompleted) {
+    return (
+      <SafeAreaProvider>
+        <OnboardingScreen onFinish={() => setIsOnboardingCompleted(true)} />
+      </SafeAreaProvider>
+    );
+  }
+
+  // 4. 解锁且已完成引导后，展示主程序 Tab 导航
   return (
     <SafeAreaProvider>
       <NavigationContainer>

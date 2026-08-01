@@ -34,26 +34,32 @@ TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }: any) => {
   }
   if (data) {
     const { locations } = data;
-    const location = locations[0];
-    if (location) {
-      const { latitude, longitude } = location.coords;
-      if (lastCoords) {
-        const dist = calculateDistance(
-          lastCoords.latitude,
-          lastCoords.longitude,
-          latitude,
-          longitude
-        );
-        // 过滤小于 5 米的微小抖动
-        if (dist > 5) {
-          totalMeters += dist;
-          console.log(
-            `📍 后台新坐标: [${latitude.toFixed(4)}, ${longitude.toFixed(4)}] | 增加: ${dist.toFixed(1)}m | 总里程: ${(totalMeters / 1000).toFixed(2)}km`
+
+    // 🐛 [修复 1] 必须循环遍历 locations！因为 iOS 退后台唤醒时会批量打包推送多个坐标点
+    if (locations && locations.length > 0) {
+      for (const location of locations) {
+        if (!location || !location.coords) continue;
+        const { latitude, longitude } = location.coords;
+
+        if (lastCoords) {
+          const dist = calculateDistance(
+            lastCoords.latitude,
+            lastCoords.longitude,
+            latitude,
+            longitude
           );
+
+          // 过滤小于 5 米的微小抖动
+          if (dist > 5) {
+            totalMeters += dist;
+            console.log(
+              `📍 iOS 后台新坐标: [${latitude.toFixed(4)}, ${longitude.toFixed(4)}] | 增加: ${dist.toFixed(1)}m | 总里程: ${(totalMeters / 1000).toFixed(2)}km`
+            );
+            lastCoords = { latitude, longitude };
+          }
+        } else {
           lastCoords = { latitude, longitude };
         }
-      } else {
-        lastCoords = { latitude, longitude };
       }
     }
   }
@@ -62,7 +68,6 @@ TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }: any) => {
 // 🌟 导出 LocationService 对象
 export const LocationService = {
   // 1. 开始追踪
-// 1. 开始追踪（优先后台定位，若无后台权限则降级为前台定位）
   startTracking: async (): Promise<boolean> => {
     // 1️⃣ 请求前台权限
     const { status: foregroundStatus } =
@@ -72,12 +77,8 @@ export const LocationService = {
     totalMeters = 0;
     lastCoords = null;
 
-    // 2️⃣ 尝试请求后台权限
-    const { status: backgroundStatus } =
-      await Location.requestBackgroundPermissionsAsync();
-
-    // 🌟 降级处理：如果没有“始终允许”权限，依然启动前台定位服务，不直接退出
-    const hasBackgroundPermission = backgroundStatus === 'granted';
+    // 2️⃣ 尝试请求后台权限（不管成功与否都继续，依靠 iOS 蓝条维持）
+    await Location.requestBackgroundPermissionsAsync();
 
     const hasStarted = await Location.hasStartedLocationUpdatesAsync(
       LOCATION_TASK_NAME
@@ -86,21 +87,24 @@ export const LocationService = {
       await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     }
 
-    // 启动定位
+    // 启动 iOS 原生后台定位
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.BestForNavigation,
       timeInterval: 2000,
       distanceInterval: 5,
-      showsBackgroundLocationIndicator: true,
-      // 只有拥有后台权限时才在后台保持运行
-      pausesUpdatesAutomatically: !hasBackgroundPermission,
+      
+      // 🍎 iOS 专属保活 3 大核心参数：
+      showsBackgroundLocationIndicator: true, // 1. 显示 iOS 顶栏蓝色定位指示气泡
+      pausesUpdatesAutomatically: false,      // 🐛 [修复 2] 强制写死 false！禁止 iOS 在等红灯时彻底终止定位
+      activityType: Location.ActivityType.AutomotiveNavigation, // 🐛 [修复 3] 告知 iOS 这是车载导航模式
+
       foregroundService: {
         notificationTitle: 'Mileage Tracker Active',
         notificationBody: 'Tracking your drive...',
       },
     });
 
-    return true; // 只要前台权限拿到，就允许开始测试！
+    return true;
   },
 
   // 2. 停止追踪并返回总行驶米数
@@ -121,10 +125,8 @@ export const LocationService = {
   // 3. 将当前 GPS 坐标转换为人类可读的真实街道地址
   getReadableAddress: async (): Promise<string> => {
     try {
-      // 🌟 优化 1：优先尝试获取最后已知位置（瞬间返回，不会因为模拟器卡死而超时）
       let location = await Location.getLastKnownPositionAsync();
       
-      // 🌟 优化 2：如果没有缓存位置，再请求当前位置，并把精度降为 Balanced（避免模拟器报错）
       if (!location) {
         location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced, 
@@ -133,7 +135,6 @@ export const LocationService = {
 
       if (!location) return 'Unknown Location';
 
-      // 🌟 逆向地理编码：经纬度 -> 真实地址
       const [place] = await Location.reverseGeocodeAsync({
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -151,6 +152,6 @@ export const LocationService = {
     } catch (error) {
       console.log('Reverse geocoding error:', error);
     }
-    return 'Location Pin'; // 如果全失败了，才显示这个保底文案
+    return 'Location Pin';
   },
 };

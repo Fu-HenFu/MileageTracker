@@ -6,6 +6,8 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Keyboard,                       // 👈 新增引入
+  KeyboardAvoidingView,          // 👈 新增引入
   Modal,
   Platform,
   ScrollView,
@@ -13,6 +15,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,       // 👈 新增引入
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -70,8 +73,9 @@ export const TrackerScreen = () => {
   const [manualDate, setManualDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // 🌟 搜索补全与坐标 State
+  // 搜索补全与坐标 State
   const [startSuggestions, setStartSuggestions] = useState<any[]>([]);
+  const [placeSuggestions, setPlaceSuggestions] = useState<any[]>([]);
   const [endSuggestions, setEndSuggestions] = useState<any[]>([]);
   const [startCoords, setStartCoords] = useState<{ lat: number; lon: number } | null>(null);
   const [endCoords, setEndCoords] = useState<{ lat: number; lon: number } | null>(null);
@@ -89,12 +93,24 @@ export const TrackerScreen = () => {
     loadSavedPlaces();
   }, []);
 
-  // 🌟 监听经纬度变化，自动计算真实路线驾车距离
   useEffect(() => {
     if (startCoords && endCoords) {
       calculateDrivingDistance(startCoords, endCoords);
     }
   }, [startCoords, endCoords, selectedCountry]);
+
+  useEffect(() => {
+    AsyncStorage.getItem('@taxmiles_selected_country').then((savedCountry) => {
+      if (savedCountry && (savedCountry === 'US' || savedCountry === 'CA' || savedCountry === 'AU')) {
+        setSelectedCountry(savedCountry as CountryCode);
+      }
+    });
+  }, []);
+
+  const handleCountrySwitch = async (country: CountryCode) => {
+    setSelectedCountry(country);
+    await AsyncStorage.setItem('@taxmiles_selected_country', country);
+  };
 
   const loadSavedPlaces = async () => {
     try {
@@ -119,7 +135,7 @@ export const TrackerScreen = () => {
     }
   };
 
-  // 🔍 核心 1：地址自动搜索补全 (Nominatim API)
+  // 🔍 优化后的地址自动搜索补全 (含超时控制与防频发)
   const fetchAddressSuggestions = async (
     query: string,
     setSuggestions: (list: any[]) => void
@@ -129,21 +145,35 @@ export const TrackerScreen = () => {
       return;
     }
 
+    // 🌟 1. 设置 3 秒超时控制器，防止请求无限挂起
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
         query
       )}&limit=5&addressdetails=1`;
+
       const response = await fetch(url, {
         headers: { 'User-Agent': 'TaxMilesApp/1.0' },
+        signal: controller.signal, // 绑定中断信号
       });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return;
       const data = await response.json();
       setSuggestions(data || []);
-    } catch (error) {
-      console.error('Autocomplete error:', error);
+    } catch (error: any) {
+      // 🌟 2. 优雅捕获超时与网络中断，静默处理不抛红错
+      if (error.name === 'AbortError' || error.message?.includes('timed out')) {
+        // 网络超时时直接忽略，不干扰用户正常输入
+        return;
+      }
+      console.warn('Autocomplete fetch skipped due to network issue.');
     }
   };
 
-  // ⚡ 核心 2：自动计算驾车行驶路线距离 (OSRM Driving Engine API)
   const calculateDrivingDistance = async (
     start: { lat: number; lon: number },
     end: { lat: number; lon: number }
@@ -155,7 +185,7 @@ export const TrackerScreen = () => {
       const data = await response.json();
 
       if (data.routes && data.routes.length > 0) {
-        const meters = data.routes[0].distance; // 路线米数
+        const meters = data.routes[0].distance;
         const dist = selectedCountry === 'US' ? meters / 1609.34 : meters / 1000;
         setManualDistance(dist.toFixed(1));
       }
@@ -257,6 +287,7 @@ export const TrackerScreen = () => {
     if (currentTargetField === 'end') setManualEnd(address);
 
     setIsPlaceModalVisible(false);
+    setPlaceSuggestions([]); // 👈 清空联想列表
     setEditingPlace(null);
     setPlaceLabelInput('');
     setPlaceAddressInput('');
@@ -432,7 +463,7 @@ export const TrackerScreen = () => {
           <TouchableOpacity
             key={country}
             style={[styles.countryBtn, selectedCountry === country && styles.activeBtn]}
-            onPress={() => setSelectedCountry(country)}
+            onPress={() => handleCountrySwitch(country)}
           >
             <Text style={selectedCountry === country ? styles.activeBtnText : styles.btnText}>
               {country}
@@ -566,274 +597,314 @@ export const TrackerScreen = () => {
         }}
       />
 
-      {/* ✍️ 7. 手动补录 Modal */}
+      {/* ✍️ 7. 手动补录 Modal (🌟 优化：加入 KeyboardAvoidingView 防止键盘遮挡) */}
       <Modal
         visible={isManualModalVisible}
         animationType="slide"
         transparent={true}
         onRequestClose={() => setIsManualModalVisible(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Manual Trip Log</Text>
-              <TouchableOpacity onPress={() => setIsManualModalVisible(false)}>
-                <Text style={styles.closeBtnText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              {/* 📅 1. 日期选择器 */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Trip Date & Time</Text>
-                <TouchableOpacity
-                  style={styles.datePickerBtn}
-                  onPress={() => setShowDatePicker(!showDatePicker)}
-                >
-                  <Text style={styles.datePickerBtnText}>
-                    📅 {manualDate.toLocaleDateString()} ({manualDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
-                  </Text>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Manual Trip Log</Text>
+                <TouchableOpacity onPress={() => setIsManualModalVisible(false)}>
+                  <Text style={styles.closeBtnText}>✕</Text>
                 </TouchableOpacity>
+              </View>
 
-                {showDatePicker && (
-                  <View style={Platform.OS === 'ios' ? styles.datePickerContainer : undefined}>
-                    <DateTimePicker
-                      value={manualDate}
-                      mode="datetime"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(event, selectedDate) => {
-                        if (Platform.OS === 'android') {
-                          setShowDatePicker(false);
-                          if (event.type === 'set' && selectedDate) {
-                            setManualDate(selectedDate);
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                {/* 📅 1. 日期选择器 */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Trip Date & Time</Text>
+                  <TouchableOpacity
+                    style={styles.datePickerBtn}
+                    onPress={() => setShowDatePicker(!showDatePicker)}
+                  >
+                    <Text style={styles.datePickerBtnText}>
+                      📅 {manualDate.toLocaleDateString()} ({manualDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                    </Text>
+                  </TouchableOpacity>
+
+                  {showDatePicker && (
+                    <View style={Platform.OS === 'ios' ? styles.datePickerContainer : undefined}>
+                      <DateTimePicker
+                        value={manualDate}
+                        mode="datetime"
+                        display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                        onChange={(event, selectedDate) => {
+                          if (Platform.OS === 'android') {
+                            setShowDatePicker(false);
+                            if (event.type === 'set' && selectedDate) {
+                              setManualDate(selectedDate);
+                            }
+                          } else {
+                            if (selectedDate) setManualDate(selectedDate);
                           }
-                        } else {
-                          if (selectedDate) setManualDate(selectedDate);
-                        }
-                      }}
-                    />
-                    {Platform.OS === 'ios' && (
-                      <TouchableOpacity
-                        style={styles.datePickerDoneBtn}
-                        onPress={() => setShowDatePicker(false)}
-                      >
-                        <Text style={styles.datePickerDoneText}>Done</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
-              </View>
-
-              {/* 🏡 2. 起点地址 (含搜索自动补全 🔍) */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Start Address</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g., 123 Main St, San Francisco"
-                  placeholderTextColor="#8e8e93"
-                  value={manualStart}
-                  onChangeText={(text) => {
-                    setManualStart(text);
-                    fetchAddressSuggestions(text, setStartSuggestions);
-                  }}
-                />
-
-                {/* 🔍 联想搜索结果下拉菜单 */}
-                {startSuggestions.length > 0 && (
-                  <View style={styles.suggestionsContainer}>
-                    {startSuggestions.map((item, index) => (
-                      <TouchableOpacity
-                        key={`start-sug-${index}`}
-                        style={styles.suggestionItem}
-                        onPress={() => {
-                          setManualStart(item.display_name);
-                          setStartCoords({ lat: parseFloat(item.lat), lon: parseFloat(item.lon) });
-                          setStartSuggestions([]);
                         }}
-                      >
-                        <Text style={styles.suggestionText} numberOfLines={2}>
-                          📍 {item.display_name}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {renderPlaceChips('start')}
-              </View>
-
-              {/* 🏬 3. 终点地址 (含搜索自动补全 🔍) */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>End Address</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g., 456 Market St, San Francisco"
-                  placeholderTextColor="#8e8e93"
-                  value={manualEnd}
-                  onChangeText={(text) => {
-                    setManualEnd(text);
-                    fetchAddressSuggestions(text, setEndSuggestions);
-                  }}
-                />
-
-                {/* 🔍 联想搜索结果下拉菜单 */}
-                {endSuggestions.length > 0 && (
-                  <View style={styles.suggestionsContainer}>
-                    {endSuggestions.map((item, index) => (
-                      <TouchableOpacity
-                        key={`end-sug-${index}`}
-                        style={styles.suggestionItem}
-                        onPress={() => {
-                          setManualEnd(item.display_name);
-                          setEndCoords({ lat: parseFloat(item.lat), lon: parseFloat(item.lon) });
-                          setEndSuggestions([]);
-                        }}
-                      >
-                        <Text style={styles.suggestionText} numberOfLines={2}>
-                          📍 {item.display_name}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {renderPlaceChips('end')}
-              </View>
-
-              {/* 📏 4. 里程数 (含 ⚡ 自动驾车测距指示器) */}
-              <View style={styles.inputGroup}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={styles.inputLabel}>Distance ({distanceUnitLabel})</Text>
-                  {isCalculatingDist && (
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      <ActivityIndicator size="small" color="#007AFF" />
-                      <Text style={{ fontSize: 11, color: '#007AFF', marginLeft: 4 }}>
-                        Calculating route...
-                      </Text>
+                      />
+                      {Platform.OS === 'ios' && (
+                        <TouchableOpacity
+                          style={styles.datePickerDoneBtn}
+                          onPress={() => setShowDatePicker(false)}
+                        >
+                          <Text style={styles.datePickerDoneText}>Done</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   )}
                 </View>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder={`e.g., 12.5 (${distanceUnitLabel})`}
-                  placeholderTextColor="#8e8e93"
-                  keyboardType="numeric"
-                  value={manualDistance}
-                  onChangeText={setManualDistance}
-                />
-              </View>
 
-              {/* 💼 5. 商业目的 */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Business Purpose / Notes</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g., Client meeting with John"
-                  placeholderTextColor="#8e8e93"
-                  value={manualNotes}
-                  onChangeText={setManualNotes}
-                />
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScrollView}>
-                  {QUICK_PURPOSES.map((purpose) => (
+                {/* 🏡 2. 起点地址 */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Start Address</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="e.g., 123 Main St, San Francisco"
+                    placeholderTextColor="#8e8e93"
+                    value={manualStart}
+                    onChangeText={(text) => {
+                      setManualStart(text);
+                      fetchAddressSuggestions(text, setStartSuggestions);
+                    }}
+                  />
+
+                  {startSuggestions.length > 0 && (
+                    <View style={styles.suggestionsContainer}>
+                      {startSuggestions.map((item, index) => (
+                        <TouchableOpacity
+                          key={`start-sug-${index}`}
+                          style={styles.suggestionItem}
+                          onPress={() => {
+                            setManualStart(item.display_name);
+                            setStartCoords({ lat: parseFloat(item.lat), lon: parseFloat(item.lon) });
+                            setStartSuggestions([]);
+                          }}
+                        >
+                          <Text style={styles.suggestionText} numberOfLines={2}>
+                            📍 {item.display_name}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+
+                  {renderPlaceChips('start')}
+                </View>
+
+                {/* 🏬 3. 终点地址 */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>End Address</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="e.g., 456 Market St, San Francisco"
+                    placeholderTextColor="#8e8e93"
+                    value={manualEnd}
+                    onChangeText={(text) => {
+                      setManualEnd(text);
+                      fetchAddressSuggestions(text, setEndSuggestions);
+                    }}
+                  />
+
+                  {endSuggestions.length > 0 && (
+                    <View style={styles.suggestionsContainer}>
+                      {endSuggestions.map((item, index) => (
+                        <TouchableOpacity
+                          key={`end-sug-${index}`}
+                          style={styles.suggestionItem}
+                          onPress={() => {
+                            setManualEnd(item.display_name);
+                            setEndCoords({ lat: parseFloat(item.lat), lon: parseFloat(item.lon) });
+                            setEndSuggestions([]);
+                          }}
+                        >
+                          <Text style={styles.suggestionText} numberOfLines={2}>
+                            📍 {item.display_name}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+
+                  {renderPlaceChips('end')}
+                </View>
+
+                {/* 📏 4. 里程数 */}
+                <View style={styles.inputGroup}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.inputLabel}>Distance ({distanceUnitLabel})</Text>
+                    {isCalculatingDist && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <ActivityIndicator size="small" color="#007AFF" />
+                        <Text style={{ fontSize: 11, color: '#007AFF', marginLeft: 4 }}>
+                          Calculating route...
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder={`e.g., 12.5 (${distanceUnitLabel})`}
+                    placeholderTextColor="#8e8e93"
+                    keyboardType="numeric"
+                    value={manualDistance}
+                    onChangeText={setManualDistance}
+                  />
+                </View>
+
+                {/* 💼 5. 商业目的 */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Business Purpose / Notes</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="e.g., Client meeting with John"
+                    placeholderTextColor="#8e8e93"
+                    value={manualNotes}
+                    onChangeText={setManualNotes}
+                  />
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScrollView}>
+                    {QUICK_PURPOSES.map((purpose) => (
+                      <TouchableOpacity
+                        key={purpose}
+                        style={styles.chip}
+                        onPress={() => setManualNotes(purpose)}
+                      >
+                        <Text style={styles.chipText}>{purpose}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+
+                {/* 🏷️ 6. 行程分类 */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Category</Text>
+                  <View style={styles.categoryPicker}>
                     <TouchableOpacity
-                      key={purpose}
-                      style={styles.chip}
-                      onPress={() => setManualNotes(purpose)}
+                      style={[
+                        styles.categoryBtn,
+                        manualCategory === 'business' && styles.activeCategoryBtn,
+                      ]}
+                      onPress={() => setManualCategory('business')}
                     >
-                      <Text style={styles.chipText}>{purpose}</Text>
+                      <Text
+                        style={[
+                          styles.categoryText,
+                          manualCategory === 'business' && styles.activeCategoryText,
+                        ]}
+                      >
+                        🏢 Business
+                      </Text>
                     </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
 
-              {/* 🏷️ 6. 行程分类 */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Category</Text>
-                <View style={styles.categoryPicker}>
-                  <TouchableOpacity
-                    style={[
-                      styles.categoryBtn,
-                      manualCategory === 'business' && styles.activeCategoryBtn,
-                    ]}
-                    onPress={() => setManualCategory('business')}
-                  >
-                    <Text
+                    <TouchableOpacity
                       style={[
-                        styles.categoryText,
-                        manualCategory === 'business' && styles.activeCategoryText,
+                        styles.categoryBtn,
+                        manualCategory === 'personal' && styles.activeCategoryBtn,
                       ]}
+                      onPress={() => setManualCategory('personal')}
                     >
-                      🏢 Business
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.categoryBtn,
-                      manualCategory === 'personal' && styles.activeCategoryBtn,
-                    ]}
-                    onPress={() => setManualCategory('personal')}
-                  >
-                    <Text
-                      style={[
-                        styles.categoryText,
-                        manualCategory === 'personal' && styles.activeCategoryText,
-                      ]}
-                    >
-                      🚗 Personal
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <TouchableOpacity style={styles.saveManualBtn} onPress={handleSaveManualTrip}>
-                <Text style={styles.saveManualBtnText}>Save Trip Record</Text>
-              </TouchableOpacity>
-            </ScrollView>
-
-            {/* 常用地址悬浮面板 */}
-            {isPlaceModalVisible && (
-              <View style={styles.subOverlay}>
-                <View style={styles.subModalBox}>
-                  <View style={styles.modalHeader}>
-                    <Text style={styles.modalTitle}>
-                      {editingPlace ? `Edit "${editingPlace.label}"` : 'Add Saved Place'}
-                    </Text>
-                    <TouchableOpacity onPress={() => setIsPlaceModalVisible(false)}>
-                      <Text style={styles.closeBtnText}>✕</Text>
+                      <Text
+                        style={[
+                          styles.categoryText,
+                          manualCategory === 'personal' && styles.activeCategoryText,
+                        ]}
+                      >
+                        🚗 Personal
+                      </Text>
                     </TouchableOpacity>
                   </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Place Name / Label (名称)</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="e.g., 🏡 Home, Costco, Client ABC"
-                      placeholderTextColor="#8e8e93"
-                      value={placeLabelInput}
-                      onChangeText={setPlaceLabelInput}
-                    />
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Full Street Address (真实门牌地址)</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="e.g., 123 Main St, San Francisco, CA"
-                      placeholderTextColor="#8e8e93"
-                      value={placeAddressInput}
-                      onChangeText={setPlaceAddressInput}
-                    />
-                  </View>
-
-                  <TouchableOpacity style={styles.saveManualBtn} onPress={handleSavePlaceModal}>
-                    <Text style={styles.saveManualBtnText}>Save Place & Fill Address</Text>
-                  </TouchableOpacity>
                 </View>
-              </View>
-            )}
+
+                <TouchableOpacity style={styles.saveManualBtn} onPress={handleSaveManualTrip}>
+                  <Text style={styles.saveManualBtnText}>Save Trip Record</Text>
+                </TouchableOpacity>
+              </ScrollView>
+
+              {/* 🌟 7. 常用地址悬浮面板 (优化：重构为顶层悬浮并设置 KeyboardAvoidingView) */}
+              {/* 常用地址悬浮面板 (已接入自动搜索补全 🔍) */}
+              {isPlaceModalVisible && (
+                <View style={styles.subOverlay}>
+                  <KeyboardAvoidingView
+                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                    style={{ flex: 1, justifyContent: 'center', width: '100%' }}
+                  >
+                    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                      <View style={styles.subModalBox}>
+                        <View style={styles.modalHeader}>
+                          <Text style={styles.modalTitle}>
+                            {editingPlace ? `Edit "${editingPlace.label}"` : 'Add Saved Place'}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => {
+                              setIsPlaceModalVisible(false);
+                              setPlaceSuggestions([]);
+                            }}
+                          >
+                            <Text style={styles.closeBtnText}>✕</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.inputGroup}>
+                          <Text style={styles.inputLabel}>Place Name / Label (名称)</Text>
+                          <TextInput
+                            style={styles.textInput}
+                            placeholder="e.g., 🏡 Home, Costco, Client ABC"
+                            placeholderTextColor="#8e8e93"
+                            value={placeLabelInput}
+                            onChangeText={setPlaceLabelInput}
+                          />
+                        </View>
+
+                        {/* 🌟 支持自动补全的地址输入框 */}
+                        <View style={styles.inputGroup}>
+                          <Text style={styles.inputLabel}>Full Street Address (真实门牌地址)</Text>
+                          <TextInput
+                            style={styles.textInput}
+                            placeholder="e.g., 123 Main St, San Francisco, CA"
+                            placeholderTextColor="#8e8e93"
+                            value={placeAddressInput}
+                            onChangeText={(text) => {
+                              setPlaceAddressInput(text);
+                              fetchAddressSuggestions(text, setPlaceSuggestions); // 👈 实时拉取建议
+                            }}
+                          />
+
+                          {/* 🔍 联想搜索结果下拉菜单 */}
+                          {placeSuggestions.length > 0 && (
+                            <View style={styles.suggestionsContainer}>
+                              {placeSuggestions.map((item, index) => (
+                                <TouchableOpacity
+                                  key={`place-sug-${index}`}
+                                  style={styles.suggestionItem}
+                                  onPress={() => {
+                                    setPlaceAddressInput(item.display_name);
+                                    setPlaceSuggestions([]); // 点击选中后收起菜单
+                                  }}
+                                >
+                                  <Text style={styles.suggestionText} numberOfLines={2}>
+                                    📍 {item.display_name}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          )}
+                        </View>
+
+                        <TouchableOpacity style={styles.saveManualBtn} onPress={handleSavePlaceModal}>
+                          <Text style={styles.saveManualBtnText}>Save Place & Fill Address</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableWithoutFeedback>
+                  </KeyboardAvoidingView>
+                </View>
+              )}
+            </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* 8. 行程详情 Modal */}
@@ -843,116 +914,121 @@ export const TrackerScreen = () => {
         transparent={true}
         onRequestClose={() => setSelectedTrip(null)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            {selectedTrip && (() => {
-              const res = calculateTaxDeduction(
-                selectedTrip.distance_meters,
-                selectedTrip.country_code
-              );
-              const startTimeStr = new Date(selectedTrip.start_time).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              });
-              const endTimeStr = new Date(selectedTrip.end_time).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              });
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              {selectedTrip && (() => {
+                const res = calculateTaxDeduction(
+                  selectedTrip.distance_meters,
+                  selectedTrip.country_code
+                );
+                const startTimeStr = new Date(selectedTrip.start_time).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+                const endTimeStr = new Date(selectedTrip.end_time).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
 
-              return (
-                <>
-                  <View style={styles.modalHeader}>
-                    <Text style={styles.modalTitle}>Trip Details</Text>
-                    <TouchableOpacity onPress={() => setSelectedTrip(null)}>
-                      <Text style={styles.closeBtnText}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
+                return (
+                  <>
+                    <View style={styles.modalHeader}>
+                      <Text style={styles.modalTitle}>Trip Details</Text>
+                      <TouchableOpacity onPress={() => setSelectedTrip(null)}>
+                        <Text style={styles.closeBtnText}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
 
-                  <View style={styles.modalAmountBox}>
-                    <Text style={styles.modalAmountLabel}>Estimated Tax Deduction</Text>
-                    <Text style={styles.modalAmountValue}>
-                      {selectedTrip.category === 'personal'
-                        ? '+$0.00'
-                        : `+${res.formattedDeduction}`}
-                    </Text>
-                  </View>
+                    <View style={styles.modalAmountBox}>
+                      <Text style={styles.modalAmountLabel}>Estimated Tax Deduction</Text>
+                      <Text style={styles.modalAmountValue}>
+                        {selectedTrip.category === 'personal'
+                          ? '+$0.00'
+                          : `+${res.formattedDeduction}`}
+                      </Text>
+                    </View>
 
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Route</Text>
-                    <Text style={styles.detailValue}>
-                      {selectedTrip.start_address} ➔ {selectedTrip.end_address}
-                    </Text>
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Distance</Text>
-                    <Text style={styles.detailValue}>{res.formattedDistance}</Text>
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Time Window</Text>
-                    <Text style={styles.detailValue}>
-                      {startTimeStr} - {endTimeStr}
-                    </Text>
-                  </View>
-
-                  {selectedTrip.notes ? (
                     <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Notes</Text>
-                      <Text style={styles.detailValue}>{selectedTrip.notes}</Text>
+                      <Text style={styles.detailLabel}>Route</Text>
+                      <Text style={styles.detailValue}>
+                        {selectedTrip.start_address} ➔ {selectedTrip.end_address}
+                      </Text>
                     </View>
-                  ) : null}
 
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Category</Text>
-                    <View style={styles.modalCategoryToggle}>
-                      <TouchableOpacity
-                        style={[
-                          styles.modalCatBtn,
-                          selectedTrip.category === 'business' && styles.modalCatBtnActive,
-                        ]}
-                        onPress={() => handleCategoryChange(selectedTrip, 'business')}
-                      >
-                        <Text
-                          style={[
-                            styles.modalCatText,
-                            selectedTrip.category === 'business' && styles.modalCatTextActive,
-                          ]}
-                        >
-                          BUSINESS
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[
-                          styles.modalCatBtn,
-                          selectedTrip.category === 'personal' && styles.modalCatBtnActive,
-                        ]}
-                        onPress={() => handleCategoryChange(selectedTrip, 'personal')}
-                      >
-                        <Text
-                          style={[
-                            styles.modalCatText,
-                            selectedTrip.category === 'personal' && styles.modalCatTextActive,
-                          ]}
-                        >
-                          PERSONAL
-                        </Text>
-                      </TouchableOpacity>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Distance</Text>
+                      <Text style={styles.detailValue}>{res.formattedDistance}</Text>
                     </View>
-                  </View>
 
-                  <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={() => handleDeleteTrip(selectedTrip.id)}
-                  >
-                    <Text style={styles.deleteBtnText}>Delete This Trip</Text>
-                  </TouchableOpacity>
-                </>
-              );
-            })()}
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Time Window</Text>
+                      <Text style={styles.detailValue}>
+                        {startTimeStr} - {endTimeStr}
+                      </Text>
+                    </View>
+
+                    {selectedTrip.notes ? (
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Notes</Text>
+                        <Text style={styles.detailValue}>{selectedTrip.notes}</Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Category</Text>
+                      <View style={styles.modalCategoryToggle}>
+                        <TouchableOpacity
+                          style={[
+                            styles.modalCatBtn,
+                            selectedTrip.category === 'business' && styles.modalCatBtnActive,
+                          ]}
+                          onPress={() => handleCategoryChange(selectedTrip, 'business')}
+                        >
+                          <Text
+                            style={[
+                              styles.modalCatText,
+                              selectedTrip.category === 'business' && styles.modalCatTextActive,
+                            ]}
+                          >
+                            BUSINESS
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[
+                            styles.modalCatBtn,
+                            selectedTrip.category === 'personal' && styles.modalCatBtnActive,
+                          ]}
+                          onPress={() => handleCategoryChange(selectedTrip, 'personal')}
+                        >
+                          <Text
+                            style={[
+                              styles.modalCatText,
+                              selectedTrip.category === 'personal' && styles.modalCatTextActive,
+                            ]}
+                          >
+                            PERSONAL
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.deleteBtn}
+                      onPress={() => handleDeleteTrip(selectedTrip.id)}
+                    >
+                      <Text style={styles.deleteBtnText}>Delete This Trip</Text>
+                    </TouchableOpacity>
+                  </>
+                );
+              })()}
+            </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1008,7 +1084,6 @@ const styles = StyleSheet.create({
   inputLabel: { fontSize: 12, fontWeight: 'bold', color: '#8e8e93', marginBottom: 6, textTransform: 'uppercase' },
   textInput: { backgroundColor: '#f2f2f7', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#1c1c1e' },
 
-  // 🔍 自动补全下拉建议框样式
   suggestionsContainer: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e5ea', borderRadius: 10, marginTop: 4, maxHeight: 150 },
   suggestionItem: { paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#f2f2f7' },
   suggestionText: { fontSize: 12, color: '#333' },
@@ -1051,17 +1126,20 @@ const styles = StyleSheet.create({
   saveManualBtn: { backgroundColor: '#34c759', paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 10, marginBottom: 10 },
   saveManualBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 
+  // 🌟 修复: 常用地址弹窗 Overlay 布局
   subOverlay: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
+    alignItems: 'center',
     padding: 16,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    zIndex: 999,
   },
   subModalBox: {
     backgroundColor: '#fff',
@@ -1072,6 +1150,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 10,
     elevation: 5,
+    width: '100%',
   },
 
   modalCategoryToggle: { flexDirection: 'row', backgroundColor: '#e5e5ea', borderRadius: 8, padding: 2 },

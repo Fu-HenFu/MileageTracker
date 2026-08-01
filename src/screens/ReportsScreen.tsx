@@ -1,8 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Linking,
@@ -20,10 +22,46 @@ import { calculateTaxDeduction } from '../utils/TaxEngine';
 
 export const ReportsScreen = () => {
   const [faceIdEnabled, setFaceIdEnabled] = useState(false);
+  const [allTrips, setAllTrips] = useState<TripRecord[]>([]);
 
-  // 报表筛选条件 State
-  const [selectedYear, setSelectedYear] = useState<string>('2026');
+  // 🌟 1. 每次进入页面刷新数据库真实行程
+  useFocusEffect(
+    useCallback(() => {
+      setAllTrips(getAllTrips() || []);
+    }, [])
+  );
+
+  // 🌟 2. 动态计算数据库中实际存在的年份列表（降序排列，例如：2026, 2025, 2024... + ALL）
+  const availableYears = useMemo(() => {
+    if (allTrips.length === 0) {
+      const currentYear = new Date().getFullYear().toString();
+      return [currentYear, 'ALL'];
+    }
+
+    // 提取去重后的年份列表
+    const yearSet = new Set(
+      allTrips.map((t) => new Date(t.start_time).getFullYear().toString())
+    );
+    
+    // 按数字大小倒序 (最新年份在前)
+    const sortedYears = Array.from(yearSet).sort((a, b) => Number(b) - Number(a));
+
+    return [...sortedYears, 'ALL'];
+  }, [allTrips]);
+
+  // 🌟 3. Selected Year 默认选中最新年份
+  const [selectedYear, setSelectedYear] = useState<string>(() => {
+    return new Date().getFullYear().toString();
+  });
+
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'business' | 'personal'>('business');
+
+  // 当可用年份变化时（例如刚导入新数据），如果当前选中的年份不存在，自动更正
+  useEffect(() => {
+    if (!availableYears.includes(selectedYear)) {
+      setSelectedYear(availableYears[0]);
+    }
+  }, [availableYears, selectedYear]);
 
   // 初始化读取 Face ID 设置
   useEffect(() => {
@@ -31,6 +69,15 @@ export const ReportsScreen = () => {
       setFaceIdEnabled(enabled);
     });
   }, []);
+
+  const handleResetOnboarding = async () => {
+    await AsyncStorage.removeItem('@taxmiles_onboarding_completed');
+    Alert.alert(
+      'Reset Successful 🔄',
+      'Onboarding flag has been cleared. Please reload the app (Cmd + R / Shake menu) to view the onboarding screen.',
+      [{ text: 'OK' }]
+    );
+  };
 
   // 处理切换 Face ID 开关
   const handleToggleFaceId = async (newValue: boolean) => {
@@ -56,9 +103,9 @@ export const ReportsScreen = () => {
     Alert.alert('Restore Purchase', 'Checking for previous subscriptions...');
   };
 
-  // 🔍 1. 获取符合筛选条件的行程列表
+  // 🔍 动态筛选当前选中年份 & 分类的行程
   const filteredTrips = useMemo(() => {
-    let trips = getAllTrips() || [];
+    let trips = allTrips;
 
     if (selectedYear !== 'ALL') {
       trips = trips.filter(
@@ -71,9 +118,9 @@ export const ReportsScreen = () => {
     }
 
     return trips;
-  }, [selectedYear, selectedCategory]);
+  }, [allTrips, selectedYear, selectedCategory]);
 
-  // 📊 2. 动态统计看板数据
+  // 📊 动态统计看板数据
   const taxStats = useMemo(() => {
     let totalDeduction = 0;
     let totalMeters = 0;
@@ -92,7 +139,7 @@ export const ReportsScreen = () => {
     };
   }, [filteredTrips]);
 
-  // 📈 3. 导出 CSV 格式表格（🌟 已加入 Business Purpose 列）
+  // 📈 导出 CSV
   const handleExportCSV = async () => {
     try {
       if (filteredTrips.length === 0) {
@@ -103,7 +150,6 @@ export const ReportsScreen = () => {
         return;
       }
 
-      // 🌟 1. CSV 表头加入 Business Purpose
       let csvContent = 'Date,Start Address,End Address,Distance,Category,Country,Business Purpose,Deduction\n';
 
       filteredTrips.forEach((t) => {
@@ -114,7 +160,6 @@ export const ReportsScreen = () => {
         const distance = `"${res.formattedDistance}"`;
         const category = t.category.toUpperCase();
         const country = t.country_code;
-        // 🌟 2. 处理商业目的字段转义
         const purpose = `"${(t.notes || '').replace(/"/g, '""')}"`;
         const deduction = `"$${t.deduction_amount.toFixed(2)}"`;
 
@@ -140,7 +185,7 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 📄 4. 导出 PDF 报表（🌟 已加入 Business Purpose 列）
+  // 📄 导出 PDF 报表
   const handleExportPDF = async () => {
     try {
       if (filteredTrips.length === 0) {
@@ -242,7 +287,7 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 🛡️ 5. 导出 JSON 数据备份
+  // 🛡️ 导出 JSON 数据备份
   const handleBackup = async () => {
     try {
       const trips = getAllTrips() || [];
@@ -282,7 +327,7 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 📥 6. 从 JSON 恢复数据
+  // 📥 从 JSON 恢复数据并实时更新 UI
   const handleImport = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -343,6 +388,9 @@ export const ReportsScreen = () => {
                 count++;
               });
 
+              // 🌟 导入成功后立即刷新 state
+              setAllTrips(getAllTrips() || []);
+
               Alert.alert(
                 'Import Successful',
                 `Successfully restored ${count} trip logs to your local database!`
@@ -367,6 +415,13 @@ export const ReportsScreen = () => {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.headerTitle}>Settings & Reports</Text>
+
+        <TouchableOpacity
+          style={[styles.actionBtn, { backgroundColor: '#ff9500', marginTop: 10 }]}
+          onPress={handleResetOnboarding}
+        >
+          <Text style={styles.actionBtnText}>🔄 Replay Onboarding</Text>
+        </TouchableOpacity>
 
         {/* 👑 1. 会员状态 */}
         <View style={[styles.card, styles.proCard]}>
@@ -438,30 +493,33 @@ export const ReportsScreen = () => {
             </View>
           </View>
 
-          {/* 筛选配置 1: Tax Year */}
+          {/* 🌟 筛选配置 1: Tax Year (根据数据库实际存在的年份动态生成 + 支持横向滑动) */}
           <View style={styles.filterGroup}>
             <Text style={styles.filterLabel}>Tax Year</Text>
-            <View style={styles.segmentContainer}>
-              {['2026', '2025', 'ALL'].map((year) => (
-                <TouchableOpacity
-                  key={year}
-                  style={[
-                    styles.segmentBtn,
-                    selectedYear === year && styles.activeSegmentBtn,
-                  ]}
-                  onPress={() => setSelectedYear(year)}
-                >
-                  <Text
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={styles.segmentContainer}>
+                {availableYears.map((year) => (
+                  <TouchableOpacity
+                    key={year}
                     style={[
-                      styles.segmentText,
-                      selectedYear === year && styles.activeSegmentText,
+                      styles.segmentBtn,
+                      selectedYear === year && styles.activeSegmentBtn,
+                      { paddingHorizontal: 16, minWidth: 64 }
                     ]}
+                    onPress={() => setSelectedYear(year)}
                   >
-                    {year}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+                    <Text
+                      style={[
+                        styles.segmentText,
+                        selectedYear === year && styles.activeSegmentText,
+                      ]}
+                    >
+                      {year}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
           </View>
 
           {/* 筛选配置 2: Category */}
@@ -494,7 +552,7 @@ export const ReportsScreen = () => {
             </View>
           </View>
 
-          {/* 🌟 双导出按钮组合 */}
+          {/* 双导出按钮组合 */}
           <View style={styles.exportBtnGroup}>
             <TouchableOpacity style={[styles.actionBtn, styles.pdfBtn]} onPress={handleExportPDF}>
               <Text style={styles.actionBtnText}>📄 PDF Report</Text>
