@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
@@ -21,49 +21,46 @@ import { AuthService } from '../utils/AuthService';
 import { calculateTaxDeduction } from '../utils/TaxEngine';
 
 export const ReportsScreen = () => {
+  const navigation = useNavigation<any>();
   const [faceIdEnabled, setFaceIdEnabled] = useState(false);
   const [allTrips, setAllTrips] = useState<TripRecord[]>([]);
+  const [isProUser, setIsProUser] = useState(false);
 
-  // 🌟 1. 每次进入页面刷新数据库真实行程
+  // 1. 每次进入页面刷新数据库真实行程
   useFocusEffect(
     useCallback(() => {
       setAllTrips(getAllTrips() || []);
     }, [])
   );
 
-  // 🌟 2. 动态计算数据库中实际存在的年份列表（降序排列，例如：2026, 2025, 2024... + ALL）
+  // 2. 动态计算数据库中实际存在的年份列表
   const availableYears = useMemo(() => {
     if (allTrips.length === 0) {
       const currentYear = new Date().getFullYear().toString();
       return [currentYear, 'ALL'];
     }
 
-    // 提取去重后的年份列表
     const yearSet = new Set(
       allTrips.map((t) => new Date(t.start_time).getFullYear().toString())
     );
-    
-    // 按数字大小倒序 (最新年份在前)
+
     const sortedYears = Array.from(yearSet).sort((a, b) => Number(b) - Number(a));
 
     return [...sortedYears, 'ALL'];
   }, [allTrips]);
 
-  // 🌟 3. Selected Year 默认选中最新年份
   const [selectedYear, setSelectedYear] = useState<string>(() => {
     return new Date().getFullYear().toString();
   });
 
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'business' | 'personal'>('business');
 
-  // 当可用年份变化时（例如刚导入新数据），如果当前选中的年份不存在，自动更正
   useEffect(() => {
     if (!availableYears.includes(selectedYear)) {
       setSelectedYear(availableYears[0]);
     }
   }, [availableYears, selectedYear]);
 
-  // 初始化读取 Face ID 设置
   useEffect(() => {
     AuthService.isFaceIdEnabled().then((enabled) => {
       setFaceIdEnabled(enabled);
@@ -74,12 +71,11 @@ export const ReportsScreen = () => {
     await AsyncStorage.removeItem('@taxmiles_onboarding_completed');
     Alert.alert(
       'Reset Successful 🔄',
-      'Onboarding flag has been cleared. Please reload the app (Cmd + R / Shake menu) to view the onboarding screen.',
+      'Onboarding flag has been cleared. Please reload the app to view onboarding.',
       [{ text: 'OK' }]
     );
   };
 
-  // 处理切换 Face ID 开关
   const handleToggleFaceId = async (newValue: boolean) => {
     if (newValue) {
       const success = await AuthService.authenticate();
@@ -96,7 +92,7 @@ export const ReportsScreen = () => {
   };
 
   const handleUpgrade = () => {
-    Alert.alert('TaxMiles Pro', 'Opening Subscription Paywall...');
+    navigation.navigate('Paywall');
   };
 
   const handleRestore = () => {
@@ -185,7 +181,7 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 📄 导出 PDF 报表
+  // 📄 导出 PDF 报表 (🌟 方案 1：带有 Photo Audit Appendix 存证附录)
   const handleExportPDF = async () => {
     try {
       if (filteredTrips.length === 0) {
@@ -197,25 +193,70 @@ export const ReportsScreen = () => {
       }
 
       let totalDeduction = 0;
-      const rowsHtml = filteredTrips
-        .map((t) => {
-          const res = calculateTaxDeduction(t.distance_meters, t.country_code);
-          totalDeduction += t.deduction_amount;
-          const dateStr = new Date(t.start_time).toLocaleDateString();
-          const purposeStr = t.notes ? t.notes : '<span style="color: #c7c7cc;">N/A</span>';
+      const rowsHtmlList: string[] = [];
+      const photoAppendixList: { dateStr: string; route: string; base64: string }[] = [];
 
-          return `
-            <tr>
-              <td>${dateStr}</td>
-              <td><b>${t.start_address}</b> &rarr; <b>${t.end_address}</b></td>
-              <td>${res.formattedDistance}</td>
-              <td>${t.category.toUpperCase()}</td>
-              <td>${purposeStr}</td>
-              <td style="color: #30d158; font-weight: bold; text-align: right;">+${res.formattedDeduction}</td>
-            </tr>
-          `;
-        })
-        .join('');
+      for (const t of filteredTrips) {
+        const res = calculateTaxDeduction(t.distance_meters, t.country_code);
+        totalDeduction += t.deduction_amount;
+        const dateStr = new Date(t.start_time).toLocaleDateString();
+        const purposeStr = t.notes ? t.notes : '<span style="color: #c7c7cc;">N/A</span>';
+
+        rowsHtmlList.push(`
+          <tr>
+            <td>${dateStr}</td>
+            <td><b>${t.start_address}</b> &rarr; <b>${t.end_address}</b></td>
+            <td>${res.formattedDistance}</td>
+            <td>${t.category.toUpperCase()}</td>
+            <td>${purposeStr}</td>
+            <td style="color: #30d158; font-weight: bold; text-align: right;">+${res.formattedDeduction}</td>
+          </tr>
+        `);
+
+        // 🌟 读取照片转 Base64，准备生成 PDF 附录
+        if (t.photo_uri) {
+          try {
+            const base64Data = await FileSystem.readAsStringAsync(t.photo_uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            photoAppendixList.push({
+              dateStr,
+              route: `${t.start_address || 'Start'} &rarr; ${t.end_address || 'End'}`,
+              base64: `data:image/jpeg;base64,${base64Data}`,
+            });
+          } catch (imgError) {
+            console.warn(`Failed to convert image for trip ${t.id}:`, imgError);
+          }
+        }
+      }
+
+      // 🌟 构建附录 HTML
+      let appendixHtml = '';
+      if (photoAppendixList.length > 0) {
+        const photoCardsHtml = photoAppendixList
+          .map(
+            (item) => `
+            <div style="width: 47%; border: 1px solid #e5e5ea; border-radius: 8px; padding: 10px; box-sizing: border-box; background: #fafafa; margin-bottom: 12px;">
+              <div style="font-size: 11px; font-weight: bold; color: #1c1c1e;">Date: ${item.dateStr}</div>
+              <div style="font-size: 10px; color: #8e8e93; margin-bottom: 8px;">${item.route}</div>
+              <img src="${item.base64}" style="width: 100%; height: 180px; object-fit: cover; border-radius: 6px;" />
+            </div>
+          `
+          )
+          .join('');
+
+        appendixHtml = `
+          <div style="page-break-before: always; margin-top: 30px;">
+            <div style="border-bottom: 2px solid #007AFF; padding-bottom: 8px; margin-bottom: 16px;">
+              <h2 style="font-size: 18px; margin: 0; color: #1c1c1e;">Appendix: Audit Proof Receipts & Odometers</h2>
+              <div style="font-size: 11px; color: #8e8e93; margin-top: 4px;">Verified photo evidence attached for tax audit protection (${photoAppendixList.length} photos)</div>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; justify-content: space-between;">
+              ${photoCardsHtml}
+            </div>
+          </div>
+        `;
+      }
 
       const reportTitle = `${selectedYear === 'ALL' ? 'All-Time' : selectedYear} ${selectedCategory.toUpperCase()} Mileage Report`;
 
@@ -261,9 +302,11 @@ export const ReportsScreen = () => {
                 </tr>
               </thead>
               <tbody>
-                ${rowsHtml}
+                ${rowsHtmlList.join('')}
               </tbody>
             </table>
+
+            ${appendixHtml}
 
             <div class="footer">
               This official report was tracked and generated by TaxMiles App.
@@ -327,7 +370,7 @@ export const ReportsScreen = () => {
     }
   };
 
-  // 📥 从 JSON 恢复数据并实时更新 UI
+  // 📥 从 JSON 恢复数据
   const handleImport = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -382,13 +425,13 @@ export const ReportsScreen = () => {
                   start_address: trip.start_address || 'Start Location',
                   end_address: trip.end_address || 'End Location',
                   notes: trip.notes || '',
+                  photo_uri: trip.photo_uri || '',
                   odometer_start: trip.odometer_start,
                   odometer_end: trip.odometer_end,
                 });
                 count++;
               });
 
-              // 🌟 导入成功后立即刷新 state
               setAllTrips(getAllTrips() || []);
 
               Alert.alert(
@@ -412,7 +455,7 @@ export const ReportsScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.headerTitle}>Settings & Reports</Text>
 
@@ -423,24 +466,36 @@ export const ReportsScreen = () => {
           <Text style={styles.actionBtnText}>🔄 Replay Onboarding</Text>
         </TouchableOpacity>
 
-        {/* 👑 1. 会员状态 */}
-        <View style={[styles.card, styles.proCard]}>
-          <View style={styles.proBadgeRow}>
-            <Text style={styles.proBadge}>FREE PLAN</Text>
+        {/* 👑 1. 会员状态卡片 */}
+        {!isProUser ? (
+          <View style={styles.proBannerCompact}>
+            <View style={{ flex: 1, marginRight: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <Text style={styles.proBadge}>PRO</Text>
+                <Text style={styles.proTitleCompact}>TaxMiles Pro</Text>
+              </View>
+              <Text style={styles.proDescCompact}>
+                Unlimited GPS, Auto PDF & Cloud Sync
+              </Text>
+            </View>
+            <TouchableOpacity style={styles.upgradeBtnCompact} onPress={handleUpgrade}>
+              <Text style={styles.upgradeBtnTextCompact}>Upgrade</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={styles.proTitle}>TaxMiles Pro</Text>
-          <Text style={styles.proDesc}>
-            Unlock Unlimited GPS Tracking, Auto PDF Reports & Cloud Backup.
-          </Text>
-
-          <TouchableOpacity style={styles.upgradeBtn} onPress={handleUpgrade}>
-            <Text style={styles.upgradeBtnText}>🚀 Upgrade to Pro</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.restoreBtn} onPress={handleRestore}>
-            <Text style={styles.restoreBtnText}>Restore Purchases</Text>
-          </TouchableOpacity>
-        </View>
+        ) : (
+          <View style={styles.proActiveCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ fontSize: 18 }}>👑</Text>
+              <View>
+                <Text style={styles.proActiveTitle}>TaxMiles Pro Active</Text>
+                <Text style={styles.proActiveSub}>All premium features unlocked</Text>
+              </View>
+            </View>
+            <TouchableOpacity onPress={handleRestore}>
+              <Text style={styles.manageSubText}>Manage</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* 🔒 2. 安全与锁屏 */}
         <View style={styles.card}>
@@ -471,7 +526,6 @@ export const ReportsScreen = () => {
             Select tax year and category to generate audit-ready reports.
           </Text>
 
-          {/* 📊 动态报税统计看板 */}
           <View style={styles.statsCard}>
             <View style={styles.statsHeader}>
               <Text style={styles.statsTitle}>
@@ -493,7 +547,6 @@ export const ReportsScreen = () => {
             </View>
           </View>
 
-          {/* 🌟 筛选配置 1: Tax Year (根据数据库实际存在的年份动态生成 + 支持横向滑动) */}
           <View style={styles.filterGroup}>
             <Text style={styles.filterLabel}>Tax Year</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -522,7 +575,6 @@ export const ReportsScreen = () => {
             </ScrollView>
           </View>
 
-          {/* 筛选配置 2: Category */}
           <View style={styles.filterGroup}>
             <Text style={styles.filterLabel}>Category</Text>
             <View style={styles.segmentContainer}>
@@ -552,7 +604,6 @@ export const ReportsScreen = () => {
             </View>
           </View>
 
-          {/* 双导出按钮组合 */}
           <View style={styles.exportBtnGroup}>
             <TouchableOpacity style={[styles.actionBtn, styles.pdfBtn]} onPress={handleExportPDF}>
               <Text style={styles.actionBtnText}>📄 PDF Report</Text>
@@ -623,7 +674,7 @@ export const ReportsScreen = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f4f6' },
-  scrollContent: { padding: 16, paddingBottom: 40 },
+  scrollContent: { padding: 16, paddingBottom: 20 },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#1c1c1e', marginVertical: 15 },
 
   card: { backgroundColor: '#fff', padding: 18, borderRadius: 14, marginBottom: 15 },
@@ -657,16 +708,6 @@ const styles = StyleSheet.create({
   segmentText: { fontSize: 13, color: '#8e8e93', fontWeight: '500' },
   activeSegmentText: { color: '#1c1c1e', fontWeight: 'bold' },
 
-  proCard: { backgroundColor: '#1c1c1e' },
-  proBadgeRow: { flexDirection: 'row', marginBottom: 6 },
-  proBadge: { backgroundColor: '#3a3a3c', color: '#ffd60a', fontSize: 10, fontWeight: 'bold', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, overflow: 'hidden' },
-  proTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 6 },
-  proDesc: { fontSize: 13, color: '#8e8e93', marginBottom: 16, lineHeight: 18 },
-  upgradeBtn: { backgroundColor: '#30d158', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginBottom: 10 },
-  upgradeBtnText: { color: '#000', fontWeight: 'bold', fontSize: 15 },
-  restoreBtn: { paddingVertical: 8, alignItems: 'center' },
-  restoreBtnText: { color: '#8e8e93', fontSize: 13, textDecorationLine: 'underline' },
-
   exportBtnGroup: { flexDirection: 'row', gap: 10, marginTop: 4 },
   actionBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   pdfBtn: { backgroundColor: '#007AFF' },
@@ -682,4 +723,47 @@ const styles = StyleSheet.create({
   arrowText: { fontSize: 14, color: '#c7c7cc' },
 
   versionText: { textAlign: 'center', color: '#8e8e93', fontSize: 12, marginTop: 10 },
+
+  proBannerCompact: {
+    backgroundColor: '#1c1c1e',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 15,
+  },
+  proBadge: {
+    backgroundColor: '#ffd60a',
+    color: '#000',
+    fontSize: 9,
+    fontWeight: 'bold',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  proTitleCompact: { fontSize: 15, fontWeight: 'bold', color: '#fff' },
+  proDescCompact: { fontSize: 12, color: '#8e8e93' },
+  upgradeBtnCompact: {
+    backgroundColor: '#30d158',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+  },
+  upgradeBtnTextCompact: { color: '#000', fontWeight: 'bold', fontSize: 13 },
+
+  proActiveCard: {
+    backgroundColor: '#1a3320',
+    borderWidth: 1,
+    borderColor: '#30d158',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    flexDirection: 'row',
+  },
+  proActiveTitle: { color: '#30d158', fontSize: 14, fontWeight: 'bold' },
+  proActiveSub: { color: '#8e8e93', fontSize: 11 },
+  manageSubText: { color: '#8e8e93', fontSize: 12, textDecorationLine: 'underline' },
 });

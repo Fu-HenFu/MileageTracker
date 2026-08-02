@@ -10,8 +10,9 @@ export interface TripRecord {
   deduction_amount: number;
   start_address?: string;
   end_address?: string;
-  // 🌟 新增防稽查字段：商业目的与仪表盘读数
+  // 🌟 防稽查字段：商业目的、照片存证与仪表盘读数
   notes?: string;               // 商业目的 / 备注（如：Client Meeting with ABC）
+  photo_uri?: string;           // 🌟 存储收据或仪表盘照片路径
   odometer_start?: number;      // 起始仪表盘读数
   odometer_end?: number;        // 终点仪表盘读数
 }
@@ -36,6 +37,7 @@ export const initDatabase = () => {
       start_address TEXT,
       end_address TEXT,
       notes TEXT,
+      photo_uri TEXT,
       odometer_start REAL,
       odometer_end REAL,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -51,6 +53,10 @@ export const initDatabase = () => {
     db.execSync('ALTER TABLE trips ADD COLUMN notes TEXT;');
   }
 
+  if (!existingColumnNames.includes('photo_uri')) {
+    db.execSync('ALTER TABLE trips ADD COLUMN photo_uri TEXT;');
+  }
+
   if (!existingColumnNames.includes('odometer_start')) {
     db.execSync('ALTER TABLE trips ADD COLUMN odometer_start REAL;');
   }
@@ -61,17 +67,18 @@ export const initDatabase = () => {
 };
 
 /**
- * 插入一条新行程（含防稽查字段）
+ * 插入一条新行程（含防稽查字段与照片存证）
  */
 export const insertTrip = (trip: TripRecord) => {
+  // 🌟 修复：SQL 语句中补齐 photo_uri 字段与 $photo_uri 占位符
   const statement = db.prepareSync(`
     INSERT INTO trips (
       start_time, end_time, distance_meters, category, country_code,
-      deduction_amount, start_address, end_address, notes, odometer_start, odometer_end
+      deduction_amount, start_address, end_address, notes, photo_uri, odometer_start, odometer_end
     )
     VALUES (
       $start_time, $end_time, $distance_meters, $category, $country_code,
-      $deduction_amount, $start_address, $end_address, $notes, $odometer_start, $odometer_end
+      $deduction_amount, $start_address, $end_address, $notes, $photo_uri, $odometer_start, $odometer_end
     )
   `);
 
@@ -85,6 +92,7 @@ export const insertTrip = (trip: TripRecord) => {
     $start_address: trip.start_address || '',
     $end_address: trip.end_address || '',
     $notes: trip.notes || '',
+    $photo_uri: trip.photo_uri || '', // 🌟 正确绑定保存照片路径
     $odometer_start: trip.odometer_start ?? null,
     $odometer_end: trip.odometer_end ?? null,
   });

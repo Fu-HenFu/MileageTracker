@@ -11,6 +11,8 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
         "NSLocationAlwaysUsageDescription": "We track your driving trips in the background to automatically calculate your tax savings.",
         "NSFaceIDUsageDescription": "TaxMiles needs Face ID to secure your driving and tax records.",
+        "NSCameraUsageDescription": "TaxMiles needs access to your camera to take photos of odometers and receipts for tax audit proof.",
+        "NSPhotoLibraryUsageDescription": "TaxMiles needs access to your photos to attach odometer and receipt images for tax audit proof.",
         "UIBackgroundModes": [
           "location",
           "fetch"
@@ -30,6 +32,13 @@
         "expo-local-authentication",
         {
           "faceIDPermission": "TaxMiles needs Face ID to secure your driving and tax records."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "TaxMiles needs access to your camera to take photos of odometers and receipts for tax audit proof.",
+          "photosPermission": "TaxMiles needs access to your photos to attach odometer and receipt images for tax audit proof."
         }
       ],
       "expo-sqlite",

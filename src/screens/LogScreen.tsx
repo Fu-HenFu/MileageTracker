@@ -3,6 +3,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -42,19 +43,20 @@ export const LogScreen = () => {
   const [searchText, setSearchText] = useState<string>('');
   const [selectedTrip, setSelectedTrip] = useState<TripRecord | null>(null);
 
+  // 全屏放大预览照片 State
+  const [fullImageUri, setFullImageUri] = useState<string | null>(null);
+
   // 1. 筛选条件 State
   const [selectedYear, setSelectedYear] = useState<string>('2026');
   const [selectedMonth, setSelectedMonth] = useState<string>('ALL');
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'business' | 'personal'>('all');
 
   // 每次进入页面刷新数据
-  // 每次进入页面刷新数据
   useFocusEffect(
     useCallback(() => {
-      // 🌟 关键修复：加上 || [] 防护，确保 realTrips 必定是数组，防止 ... 展开报错
       const realTrips = getAllTrips() || [];
 
-      // 🧪 【测试用】伪造一条 2027 年 5 月 20 日的行程数据
+      // 🧪 【测试用】带有示例存证图片的行程数据
       const mock2027Trip: TripRecord = {
         id: 99999,
         start_time: '2027-05-20T10:00:00.000Z',
@@ -65,21 +67,21 @@ export const LogScreen = () => {
         deduction_amount: 13.40,
         start_address: '777 Future St, New York',
         end_address: '888 Tech Center, New York',
+        notes: 'Client Meeting & Fuel Proof',
+        photo_uri: 'https://picsum.photos/600/400',
       };
 
       setTrips([mock2027Trip, ...realTrips]);
     }, [])
   );
 
-  // 🌟 动态计算年份（零硬编码，随数据自然增长）
+  // 🌟 动态计算年份
   const availableYears = useMemo(() => {
-    const currentYear = new Date().getFullYear().toString(); // 获取今年，如 "2026"
+    const currentYear = new Date().getFullYear().toString();
     const yearsSet = new Set<string>();
 
-    // 1. 始终把当前年份作为保底选项
     yearsSet.add(currentYear);
 
-    // 2. 只有当数据库里确实存在其他年份的数据时，才收集进来
     trips.forEach((t) => {
       if (t.start_time) {
         const yearStr = new Date(t.start_time).getFullYear().toString();
@@ -87,16 +89,13 @@ export const LogScreen = () => {
       }
     });
 
-    // 从大到小排序：2027, 2026...
     const sortedYears = Array.from(yearsSet).sort((a, b) => Number(b) - Number(a));
 
-    // 🌟 关键 UX 细节：如果只有今年 1 个年份，就不需要 'ALL'，避免界面啰嗦
     if (sortedYears.length === 1) {
-      return sortedYears; // ['2026']
+      return sortedYears;
     }
 
-    // 有多个年份时，才显示 'ALL' 汇总选项
-    return ['ALL', ...sortedYears]; // ['ALL', '2027', '2026']
+    return ['ALL', ...sortedYears];
   }, [trips]);
 
   // 🔍 核心过滤逻辑 (年份 + 月份 + 类别 + 关键字)
@@ -106,22 +105,18 @@ export const LogScreen = () => {
       const tripYear = tripDate.getFullYear().toString();
       const tripMonth = (tripDate.getMonth() + 1).toString();
 
-      // 1️⃣ 按年份过滤
       if (selectedYear !== 'ALL' && tripYear !== selectedYear) {
         return false;
       }
 
-      // 2️⃣ 按月份过滤
       if (selectedMonth !== 'ALL' && tripMonth !== selectedMonth) {
         return false;
       }
 
-      // 3️⃣ 按分类过滤
       if (selectedCategory !== 'all' && t.category !== selectedCategory) {
         return false;
       }
 
-      // 4️⃣ 按关键字过滤
       if (searchText.trim()) {
         const query = searchText.toLowerCase();
         const matchStart = t.start_address.toLowerCase().includes(query);
@@ -210,7 +205,7 @@ export const LogScreen = () => {
   }, [selectedYear, selectedMonth]);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* 顶部标题栏 */}
       <View style={styles.headerRow}>
         <Text style={styles.headerTitle}>Driving Logs ({filteredTrips.length})</Text>
@@ -223,8 +218,6 @@ export const LogScreen = () => {
 
       {/* 🌟 筛选控制区 */}
       <View style={styles.filterSection}>
-
-        {/* 1. 年份可滑动选择器（🌟 只有存在 2 个及以上年份时才渲染，避免首年界面啰嗦） */}
         {availableYears.length > 1 && (
           <View style={styles.filterRow}>
             <Text style={styles.filterLabel}>YEAR:</Text>
@@ -256,7 +249,6 @@ export const LogScreen = () => {
           </View>
         )}
 
-        {/* 2. 月份可滑动选择器 */}
         <View style={[styles.filterRow, availableYears.length > 1 && { marginTop: 8 }]}>
           <Text style={styles.filterLabel}>MONTH:</Text>
           <ScrollView
@@ -286,7 +278,6 @@ export const LogScreen = () => {
           </ScrollView>
         </View>
 
-        {/* 3. 类别按钮 */}
         <View style={[styles.segmentContainer, { marginTop: 10 }]}>
           {[
             { label: 'All Categories', value: 'all' },
@@ -339,6 +330,7 @@ export const LogScreen = () => {
       <FlatList
         data={filteredTrips}
         keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
+        contentContainerStyle={{ paddingBottom: 20 }}
         renderItem={({ item }) => {
           const res = calculateTaxDeduction(item.distance_meters, item.country_code);
           return (
@@ -403,7 +395,10 @@ export const LogScreen = () => {
         visible={!!selectedTrip}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setSelectedTrip(null)}
+        onRequestClose={() => {
+          setSelectedTrip(null);
+          setFullImageUri(null);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -422,7 +417,7 @@ export const LogScreen = () => {
               });
 
               return (
-                <>
+                <ScrollView showsVerticalScrollIndicator={false}>
                   <View style={styles.modalHeader}>
                     <Text style={styles.modalTitle}>Log Details</Text>
                     <TouchableOpacity onPress={() => setSelectedTrip(null)}>
@@ -460,6 +455,32 @@ export const LogScreen = () => {
                       {new Date(selectedTrip.start_time).toLocaleDateString()} ({startTimeStr} - {endTimeStr})
                     </Text>
                   </View>
+
+                  {selectedTrip.notes ? (
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Notes</Text>
+                      <Text style={styles.detailValue}>{selectedTrip.notes}</Text>
+                    </View>
+                  ) : null}
+
+                  {/* 📷 存证照片区域 */}
+                  {selectedTrip.photo_uri ? (
+                    <View style={styles.detailRowColumn}>
+                      <Text style={styles.detailLabel}>Attached Proof (Audit Shield)</Text>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => setFullImageUri(selectedTrip.photo_uri || null)}
+                        style={{ marginTop: 8 }}
+                      >
+                        <Image
+                          source={{ uri: selectedTrip.photo_uri }}
+                          style={styles.photoThumbnail}
+                          resizeMode="cover"
+                        />
+                        <Text style={styles.zoomHintText}>🔍 Tap image to view full size</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
 
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Category</Text>
@@ -506,10 +527,27 @@ export const LogScreen = () => {
                   >
                     <Text style={styles.deleteBtnText}>Delete This Log</Text>
                   </TouchableOpacity>
-                </>
+                </ScrollView>
               );
             })()}
           </View>
+
+          {/* 🌟 核心修复：把大图全屏遮罩移入弹窗内部（绝对定位），解决 iOS 双 Modal 冲突 */}
+          {fullImageUri ? (
+            <View style={styles.fullImageOverlay}>
+              <TouchableOpacity
+                style={styles.fullImageCloseBtn}
+                onPress={() => setFullImageUri(null)}
+              >
+                <Text style={styles.fullImageCloseText}>✕ Close</Text>
+              </TouchableOpacity>
+              <Image
+                source={{ uri: fullImageUri }}
+                style={styles.fullImage}
+                resizeMode="contain"
+              />
+            </View>
+          ) : null}
         </View>
       </Modal>
     </SafeAreaView>
@@ -517,7 +555,12 @@ export const LogScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f4f6', padding: 16 },
+  container: {
+    flex: 1,
+    backgroundColor: '#f4f4f6',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 12 },
   headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#1c1c1e' },
   clearAllText: { fontSize: 13, color: '#ff3b30', fontWeight: '600' },
@@ -558,7 +601,7 @@ const styles = StyleSheet.create({
   emptyText: { color: '#8e8e93', fontSize: 14, textAlign: 'center' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 },
+  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40, maxHeight: '85%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1c1c1e' },
   closeBtnText: { fontSize: 18, color: '#8e8e93', fontWeight: 'bold' },
@@ -577,4 +620,33 @@ const styles = StyleSheet.create({
 
   deleteBtn: { marginTop: 25, backgroundColor: '#ffe5e5', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   deleteBtnText: { color: '#ff3b30', fontWeight: 'bold', fontSize: 14 },
+
+  detailRowColumn: { marginVertical: 12, borderTopWidth: 1, borderTopColor: '#f2f2f7', paddingTop: 10 },
+  photoThumbnail: { width: '100%', height: 160, borderRadius: 10 },
+  zoomHintText: { fontSize: 11, color: '#007AFF', textAlign: 'right', marginTop: 4, fontWeight: '500' },
+
+  // 🌟 绝对定位浮层样式（确保 zIndex 极高覆盖屏幕）
+  fullImageOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  fullImageCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 10000,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  fullImageCloseText: { color: '#ffffff', fontSize: 14, fontWeight: 'bold' },
+  fullImage: { width: '100%', height: '80%' },
 });

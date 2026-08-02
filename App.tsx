@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -8,21 +9,86 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { initDatabase } from './src/db/database';
 import { LogScreen } from './src/screens/LogScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
+import { PaywallScreen } from './src/screens/PaywallScreen';
 import { ReportsScreen } from './src/screens/ReportsScreen';
+import { SplashScreen } from './src/screens/SplashScreen'; // 🌟 1. 引入开屏动画组件
 import { TrackerScreen } from './src/screens/TrackerScreen';
 import { AuthService } from './src/utils/AuthService';
+import { Ionicons } from '@expo/vector-icons'; // 🌟 引入 Expo/iOS 标准图标库
+import * as Haptics from 'expo-haptics';         // 🌟 引入 iOS 原生震动反馈（可选）
 
 const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
+
+// 📱 封装 3 个底部 Tab 作为一个主架构组件
+// 📱 封装 3 个底部 Tab 作为一个主架构组件 (已加入高强对比度 UI)
+function MainTabs() {
+  return (
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        headerShown: false,
+        // 🌟 1. 图标固定不变，颜色随选中/未选中精准切换
+        tabBarIcon: ({ focused, color, size }) => {
+          let iconName: keyof typeof Ionicons.glyphMap = 'car';
+
+          if (route.name === 'Tracker') iconName = 'car-sport';
+          if (route.name === 'Log') iconName = 'document-text';
+          if (route.name === 'Reports') iconName = 'settings';
+
+          return (
+            <Ionicons
+              name={iconName}
+              size={23}
+              color={color} // 👈 继承系统的 color，选中时#007AFF，未选中时#8E8E93
+            />
+          );
+        },
+
+        // 🌟 2. 匹配 iOS 官方标准颜色
+        tabBarActiveTintColor: '#007AFF',   // iOS System Blue (亮蓝)
+        tabBarInactiveTintColor: '#8E8E93', // iOS System Gray (高级灰)
+
+        // 🌟 3. iOS 字体与间距规范
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: '500',
+          marginTop: -2,
+          paddingBottom: 4,
+        },
+
+        // 🌟 4. iOS 经典半透明磨砂风格 TabBar
+        tabBarStyle: {
+          height: 84, // 适配 iOS 底部 SafeArea
+          paddingTop: 8,
+          backgroundColor: '#ffffff',
+          borderTopWidth: 0.5,
+          borderTopColor: 'rgba(60, 60, 67, 0.29)', // iOS 标准分隔线颜色
+        },
+      })}
+      // 🌟 点击切换 Tab 时触发 iOS 原生轻微震动（极佳的手感！）
+      screenListeners={{
+        tabPress: () => {
+          Haptics.selectionAsync();
+        },
+      }}
+    >
+      <Tab.Screen name="Tracker" component={TrackerScreen} options={{ title: 'Tracker' }} />
+      <Tab.Screen name="Log" component={LogScreen} options={{ title: 'Logs' }} />
+      <Tab.Screen name="Reports" component={ReportsScreen} options={{ title: 'Settings' }} />
+    </Tab.Navigator>
+  );
+}
 
 export default function App() {
   const [isUnlocked, setIsUnlocked] = useState(false);
-  // 🌟 记录用户是否已完成新手引导 (null 代表数据还在读取中)
   const [isOnboardingCompleted, setIsOnboardingCompleted] = useState<boolean | null>(null);
+  
+  // 🌟 2. 控制开屏欢迎动画的展示 State
+  const [showSplash, setShowSplash] = useState(true);
 
   const appState = useRef<AppStateStatus>(AppState.currentState);
   const isAuthenticating = useRef<boolean>(false);
 
-  // 🌟 检查锁屏认证状态
   const checkAuth = async (isManual = false) => {
     if (isManual) {
       isAuthenticating.current = false;
@@ -51,22 +117,18 @@ export default function App() {
   };
 
   useEffect(() => {
-    // 1. 初始化数据库
     try {
       initDatabase();
     } catch (error) {
       console.error('Failed to initialize database:', error);
     }
 
-    // 2. 读取本地保存的新手引导状态
     AsyncStorage.getItem('@taxmiles_onboarding_completed').then((val) => {
       setIsOnboardingCompleted(val === 'true');
     });
 
-    // 3. 冷启动检查锁屏认证
     checkAuth();
 
-    // 4. 监听前后台切换锁屏
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (
         appState.current === 'background' &&
@@ -87,7 +149,7 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
-  // 1. 如果未通过安全解锁（开启了 Face ID 锁屏），展示锁屏页面
+  // 1️⃣ 未通过 Face ID 解锁，展示锁屏页面
   if (!isUnlocked) {
     return (
       <View style={styles.lockScreen}>
@@ -100,12 +162,12 @@ export default function App() {
     );
   }
 
-  // 2. 如果数据正在读取中，保持空白等待
+  // 2️⃣ 状态读取中
   if (isOnboardingCompleted === null) {
     return null;
   }
 
-  // 3. 如果用户还没完成过引导页，优先展示 Onboarding 画面
+  // 3️⃣ 首次使用，展示新手引导页
   if (!isOnboardingCompleted) {
     return (
       <SafeAreaProvider>
@@ -114,28 +176,23 @@ export default function App() {
     );
   }
 
-  // 4. 解锁且已完成引导后，展示主程序 Tab 导航
+  // 🌟 4️⃣ 解锁且完成引导后，先播放开屏动画品牌过渡页
+  if (showSplash) {
+    return <SplashScreen onFinish={() => setShowSplash(false)} />;
+  }
+
+  // 🌟 5️⃣ 动画结束后自然滑入主程序导航（Tabs + Paywall Modal）
   return (
     <SafeAreaProvider>
       <NavigationContainer>
-        <Tab.Navigator
-          screenOptions={({ route }) => ({
-            headerShown: false,
-            tabBarIcon: () => {
-              let icon = '🚗';
-              if (route.name === 'Tracker') icon = '🟢';
-              if (route.name === 'Log') icon = '📋';
-              if (route.name === 'Reports') icon = '⚙️';
-              return <Text style={{ fontSize: 18 }}>{icon}</Text>;
-            },
-            tabBarActiveTintColor: '#007AFF',
-            tabBarInactiveTintColor: '#8e8e93',
-          })}
-        >
-          <Tab.Screen name="Tracker" component={TrackerScreen} options={{ title: 'Tracker' }} />
-          <Tab.Screen name="Log" component={LogScreen} options={{ title: 'Logs' }} />
-          <Tab.Screen name="Reports" component={ReportsScreen} options={{ title: 'Settings' }} />
-        </Tab.Navigator>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="MainTabs" component={MainTabs} />
+          <Stack.Screen
+            name="Paywall"
+            component={PaywallScreen}
+            options={{ presentation: 'modal' }}
+          />
+        </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
   );

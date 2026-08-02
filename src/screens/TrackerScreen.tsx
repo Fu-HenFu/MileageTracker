@@ -1,13 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import * as ImagePicker from 'expo-image-picker';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Keyboard,                       // 👈 新增引入
-  KeyboardAvoidingView,          // 👈 新增引入
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
@@ -15,7 +17,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  TouchableWithoutFeedback,       // 👈 新增引入
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -51,6 +53,8 @@ const QUICK_PURPOSES = [
 ];
 
 export const TrackerScreen = () => {
+  const [manualPhotoUri, setManualPhotoUri] = useState<string>(''); // 🌟 选中的照片
+  const [fullImageUri, setFullImageUri] = useState<string | null>(null); // 🌟 新增：全屏放大预览 State
   const [startAddress, setStartAddress] = useState<string>('');
   const navigation = useNavigation<any>();
   const [selectedCountry, setSelectedCountry] = useState<CountryCode>('US');
@@ -107,6 +111,36 @@ export const TrackerScreen = () => {
     });
   }, []);
 
+  // 📷 拍照功能
+  const handleTakePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Needed', 'Camera access is required to capture odometer or receipts.');
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      quality: 0.6,
+    });
+
+    if (!result.canceled && result.assets.length > 0) {
+      setManualPhotoUri(result.assets[0].uri);
+    }
+  };
+
+  // 🖼️ 从相册选择功能
+  const handlePickImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: true,
+      quality: 0.6,
+    });
+
+    if (!result.canceled && result.assets.length > 0) {
+      setManualPhotoUri(result.assets[0].uri);
+    }
+  };
+
   const handleCountrySwitch = async (country: CountryCode) => {
     setSelectedCountry(country);
     await AsyncStorage.setItem('@taxmiles_selected_country', country);
@@ -135,7 +169,7 @@ export const TrackerScreen = () => {
     }
   };
 
-  // 🔍 优化后的地址自动搜索补全 (含超时控制与防频发)
+  // 🔍 地址自动搜索补全
   const fetchAddressSuggestions = async (
     query: string,
     setSuggestions: (list: any[]) => void
@@ -145,7 +179,6 @@ export const TrackerScreen = () => {
       return;
     }
 
-    // 🌟 1. 设置 3 秒超时控制器，防止请求无限挂起
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
@@ -156,7 +189,7 @@ export const TrackerScreen = () => {
 
       const response = await fetch(url, {
         headers: { 'User-Agent': 'TaxMilesApp/1.0' },
-        signal: controller.signal, // 绑定中断信号
+        signal: controller.signal,
       });
 
       clearTimeout(timeoutId);
@@ -165,9 +198,7 @@ export const TrackerScreen = () => {
       const data = await response.json();
       setSuggestions(data || []);
     } catch (error: any) {
-      // 🌟 2. 优雅捕获超时与网络中断，静默处理不抛红错
       if (error.name === 'AbortError' || error.message?.includes('timed out')) {
-        // 网络超时时直接忽略，不干扰用户正常输入
         return;
       }
       console.warn('Autocomplete fetch skipped due to network issue.');
@@ -287,7 +318,7 @@ export const TrackerScreen = () => {
     if (currentTargetField === 'end') setManualEnd(address);
 
     setIsPlaceModalVisible(false);
-    setPlaceSuggestions([]); // 👈 清空联想列表
+    setPlaceSuggestions([]);
     setEditingPlace(null);
     setPlaceLabelInput('');
     setPlaceAddressInput('');
@@ -376,6 +407,7 @@ export const TrackerScreen = () => {
       start_address: manualStart.trim(),
       end_address: manualEnd.trim(),
       notes: manualNotes.trim() || (manualCategory === 'business' ? 'Business Mileage' : 'Personal Drive'),
+      photo_uri: manualPhotoUri,
     });
 
     setIsManualModalVisible(false);
@@ -383,6 +415,7 @@ export const TrackerScreen = () => {
     setManualEnd('');
     setManualDistance('');
     setManualNotes('');
+    setManualPhotoUri('');
     setStartCoords(null);
     setEndCoords(null);
     setManualCategory('business');
@@ -590,14 +623,16 @@ export const TrackerScreen = () => {
                   item.category === 'personal' && { color: '#8e8e93' },
                 ]}
               >
-                {item.category === 'personal' ? '+$0.00' : `+${res.formattedDeduction}`}
+                {item.category === 'personal'
+                  ? `+${calculateTaxDeduction(0, item.country_code).formattedDeduction}`
+                  : `+${res.formattedDeduction}`}
               </Text>
             </TouchableOpacity>
           );
         }}
       />
 
-      {/* ✍️ 7. 手动补录 Modal (🌟 优化：加入 KeyboardAvoidingView 防止键盘遮挡) */}
+      {/* ✍️ 7. 手动补录 Modal */}
       <Modal
         visible={isManualModalVisible}
         animationType="slide"
@@ -819,13 +854,38 @@ export const TrackerScreen = () => {
                   </View>
                 </View>
 
+                {/* 📸 7. 照片附件 */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Odometer / Receipt Proof (Audit Photo)</Text>
+                  {manualPhotoUri ? (
+                    <View style={styles.photoPreviewContainer}>
+                      <Image source={{ uri: manualPhotoUri }} style={styles.photoPreview} />
+                      <TouchableOpacity
+                        style={styles.removePhotoBtn}
+                        onPress={() => setManualPhotoUri('')}
+                      >
+                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>Remove ✕</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TouchableOpacity style={styles.photoBtn} onPress={handleTakePhoto}>
+                        <Text style={styles.photoBtnText}>📷 Take Photo</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity style={styles.photoBtn} onPress={handlePickImage}>
+                        <Text style={styles.photoBtnText}>🖼️ Choose Photo</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+
                 <TouchableOpacity style={styles.saveManualBtn} onPress={handleSaveManualTrip}>
                   <Text style={styles.saveManualBtnText}>Save Trip Record</Text>
                 </TouchableOpacity>
               </ScrollView>
 
-              {/* 🌟 7. 常用地址悬浮面板 (优化：重构为顶层悬浮并设置 KeyboardAvoidingView) */}
-              {/* 常用地址悬浮面板 (已接入自动搜索补全 🔍) */}
+              {/* 常用地址悬浮面板 */}
               {isPlaceModalVisible && (
                 <View style={styles.subOverlay}>
                   <KeyboardAvoidingView
@@ -859,7 +919,6 @@ export const TrackerScreen = () => {
                           />
                         </View>
 
-                        {/* 🌟 支持自动补全的地址输入框 */}
                         <View style={styles.inputGroup}>
                           <Text style={styles.inputLabel}>Full Street Address (真实门牌地址)</Text>
                           <TextInput
@@ -869,11 +928,10 @@ export const TrackerScreen = () => {
                             value={placeAddressInput}
                             onChangeText={(text) => {
                               setPlaceAddressInput(text);
-                              fetchAddressSuggestions(text, setPlaceSuggestions); // 👈 实时拉取建议
+                              fetchAddressSuggestions(text, setPlaceSuggestions);
                             }}
                           />
 
-                          {/* 🔍 联想搜索结果下拉菜单 */}
                           {placeSuggestions.length > 0 && (
                             <View style={styles.suggestionsContainer}>
                               {placeSuggestions.map((item, index) => (
@@ -882,7 +940,7 @@ export const TrackerScreen = () => {
                                   style={styles.suggestionItem}
                                   onPress={() => {
                                     setPlaceAddressInput(item.display_name);
-                                    setPlaceSuggestions([]); // 点击选中后收起菜单
+                                    setPlaceSuggestions([]);
                                   }}
                                 >
                                   <Text style={styles.suggestionText} numberOfLines={2}>
@@ -935,7 +993,7 @@ export const TrackerScreen = () => {
                 });
 
                 return (
-                  <>
+                  <ScrollView showsVerticalScrollIndicator={false}>
                     <View style={styles.modalHeader}>
                       <Text style={styles.modalTitle}>Trip Details</Text>
                       <TouchableOpacity onPress={() => setSelectedTrip(null)}>
@@ -947,7 +1005,7 @@ export const TrackerScreen = () => {
                       <Text style={styles.modalAmountLabel}>Estimated Tax Deduction</Text>
                       <Text style={styles.modalAmountValue}>
                         {selectedTrip.category === 'personal'
-                          ? '+$0.00'
+                          ? `+${calculateTaxDeduction(0, selectedTrip.country_code).formattedDeduction}`
                           : `+${res.formattedDeduction}`}
                       </Text>
                     </View>
@@ -975,6 +1033,25 @@ export const TrackerScreen = () => {
                       <View style={styles.detailRow}>
                         <Text style={styles.detailLabel}>Notes</Text>
                         <Text style={styles.detailValue}>{selectedTrip.notes}</Text>
+                      </View>
+                    ) : null}
+
+                    {/* 📷 照片存证与点击全屏放大 */}
+                    {selectedTrip.photo_uri ? (
+                      <View style={styles.detailRowColumn}>
+                        <Text style={styles.detailLabel}>Attached Proof (Audit Shield)</Text>
+                        <TouchableOpacity
+                          activeOpacity={0.8}
+                          onPress={() => setFullImageUri(selectedTrip.photo_uri || null)}
+                          style={{ marginTop: 8 }}
+                        >
+                          <Image
+                            source={{ uri: selectedTrip.photo_uri }}
+                            style={styles.photoThumbnail}
+                            resizeMode="cover"
+                          />
+                          <Text style={styles.zoomHintText}>🔍 Tap image to view full size</Text>
+                        </TouchableOpacity>
                       </View>
                     ) : null}
 
@@ -1023,12 +1100,36 @@ export const TrackerScreen = () => {
                     >
                       <Text style={styles.deleteBtnText}>Delete This Trip</Text>
                     </TouchableOpacity>
-                  </>
+                  </ScrollView>
                 );
               })()}
             </View>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* 🌟 全屏大图沉浸式预览 Modal */}
+      <Modal
+        visible={!!fullImageUri}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setFullImageUri(null)}
+      >
+        <View style={styles.fullImageOverlay}>
+          <TouchableOpacity
+            style={styles.fullImageCloseBtn}
+            onPress={() => setFullImageUri(null)}
+          >
+            <Text style={styles.fullImageCloseText}>✕ Close</Text>
+          </TouchableOpacity>
+          {fullImageUri && (
+            <Image
+              source={{ uri: fullImageUri }}
+              style={styles.fullImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1126,7 +1227,6 @@ const styles = StyleSheet.create({
   saveManualBtn: { backgroundColor: '#34c759', paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 10, marginBottom: 10 },
   saveManualBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 
-  // 🌟 修复: 常用地址弹窗 Overlay 布局
   subOverlay: {
     position: 'absolute',
     top: 0,
@@ -1166,4 +1266,46 @@ const styles = StyleSheet.create({
   dot: { width: 7, height: 7, borderRadius: 3.5, marginRight: 8 },
   addressText: { fontSize: 14, fontWeight: '600', color: '#1c1c1e', flex: 1 },
   tripMeta: { fontSize: 12, color: '#8e8e93', marginTop: 6, marginLeft: 15 },
+  photoBtn: {
+    flex: 1,
+    backgroundColor: '#e5e5ea',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  photoBtnText: { color: '#007AFF', fontWeight: 'bold', fontSize: 13 },
+  photoPreviewContainer: { position: 'relative', marginTop: 6 },
+  photoPreview: { width: '100%', height: 140, borderRadius: 10 },
+  removePhotoBtn: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  detailRowColumn: { marginVertical: 12, borderTopWidth: 1, borderTopColor: '#f2f2f7', paddingTop: 10 },
+
+  // 🌟 照片卡片与全屏 Modal 样式
+  photoThumbnail: { width: '100%', height: 160, borderRadius: 10 },
+  zoomHintText: { fontSize: 11, color: '#007AFF', textAlign: 'right', marginTop: 4, fontWeight: '500' },
+  fullImageOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullImageCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  fullImageCloseText: { color: '#ffffff', fontSize: 14, fontWeight: 'bold' },
+  fullImage: { width: '100%', height: '80%' },
 });
